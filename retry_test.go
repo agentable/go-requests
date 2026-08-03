@@ -1,0 +1,188 @@
+package requests
+
+import (
+	"context"
+	"net"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+)
+
+type retryTimeoutError struct{}
+
+func (retryTimeoutError) Error() string {
+	return "timeout"
+}
+
+func (retryTimeoutError) Timeout() bool {
+	return true
+}
+
+func (retryTimeoutError) Temporary() bool {
+	return true
+}
+
+func TestDefaultRetryIf(t *testing.T) {
+	assert.False(t, DefaultRetryIf(nil, nil, assert.AnError))
+	assert.True(t, DefaultRetryIf(nil, nil, context.DeadlineExceeded))
+	assert.True(t, DefaultRetryIf(nil, nil, &net.OpError{Op: "dial", Net: "tcp", Err: assert.AnError}))
+	assert.True(t, DefaultRetryIf(nil, &http.Response{StatusCode: http.StatusRequestTimeout}, nil))
+	assert.True(t, DefaultRetryIf(nil, &http.Response{StatusCode: http.StatusTooManyRequests}, nil))
+	assert.True(t, DefaultRetryIf(nil, &http.Response{StatusCode: http.StatusInternalServerError}, nil))
+	assert.False(t, DefaultRetryIf(nil, &http.Response{StatusCode: http.StatusBadRequest}, nil))
+}
+
+func TestDefaultRetryIfClassifiesTransportErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "caller cancellation", err: context.Canceled},
+		{name: "unknown error", err: assert.AnError},
+		{name: "redirect disabled", err: ErrAutoRedirectDisabled},
+		{name: "too many redirects", err: ErrTooManyRedirects},
+		{name: "unsupported proxy scheme", err: ErrUnsupportedScheme},
+		{name: "deadline exceeded", err: context.DeadlineExceeded, want: true},
+		{name: "net timeout", err: retryTimeoutError{}, want: true},
+		{name: "connection error", err: &net.OpError{Op: "dial", Net: "tcp", Err: assert.AnError}, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, DefaultRetryIf(nil, nil, tt.err))
+		})
+	}
+}
+
+func TestDefaultRetryIfClassifiesResponses(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		want   bool
+	}{
+		{name: "request timeout", status: http.StatusRequestTimeout, want: true},
+		{name: "too many requests", status: http.StatusTooManyRequests, want: true},
+		{name: "internal server error", status: http.StatusInternalServerError, want: true},
+		{name: "bad request", status: http.StatusBadRequest},
+		{name: "ok", status: http.StatusOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &http.Response{StatusCode: tt.status}
+			assert.Equal(t, tt.want, DefaultRetryIf(nil, resp, nil))
+		})
+	}
+}
+
+func TestRetryAfterDelay(t *testing.T) {
+	fallback := 2 * time.Second
+
+	t.Run("Seconds", func(t *testing.T) {
+		resp := &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": []string{"3"}}}
+		assert.Equal(t, 3*time.Second, retryAfterDelay(resp, fallback))
+	})
+
+	t.Run("HTTPDate", func(t *testing.T) {
+		when := time.Now().Add(150 * time.Millisecond).UTC().Format(http.TimeFormat)
+		resp := &http.Response{StatusCode: http.StatusServiceUnavailable, Header: http.Header{"Retry-After": []string{when}}}
+		delay := retryAfterDelay(resp, fallback)
+		assert.GreaterOrEqual(t, delay, time.Duration(0))
+		assert.LessOrEqual(t, delay, 500*time.Millisecond)
+	})
+
+	t.Run("InvalidFallsBack", func(t *testing.T) {
+		resp := &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": []string{"bad"}}}
+		assert.Equal(t, fallback, retryAfterDelay(resp, fallback))
+	})
+
+	t.Run("IgnoredForOtherStatus", func(t *testing.T) {
+		resp := &http.Response{StatusCode: http.StatusBadRequest, Header: http.Header{"Retry-After": []string{"3"}}}
+		assert.Equal(t, fallback, retryAfterDelay(resp, fallback))
+	})
+}
+
+func TestJitterBackoffStrategy(t *testing.T) {
+	t.Run("OutputWithinExpectedBounds", func(t *testing.T) {
+		base := DefaultBackoffStrategy(1 * time.Second)
+		jittered := JitterBackoffStrategy(base, 0.25)
+
+		for range 100 {
+			delay := jittered(0)
+			assert.GreaterOrEqual(t, delay, 750*time.Millisecond, "Delay should be >= 750ms with 25%% jitter on 1s base")
+			assert.LessOrEqual(t, delay, 1250*time.Millisecond, "Delay should be <= 1250ms with 25%% jitter on 1s base")
+		}
+	})
+
+	t.Run("ZeroFractionReturnsBaseDelay", func(t *testing.T) {
+		base := DefaultBackoffStrategy(500 * time.Millisecond)
+		jittered := JitterBackoffStrategy(base, 0)
+
+		for range 10 {
+			delay := jittered(0)
+			assert.Equal(t, 500*time.Millisecond, delay, "Zero fraction should return exact base delay")
+		}
+	})
+
+	t.Run("NegativeFractionReturnsBaseDelay", func(t *testing.T) {
+		base := DefaultBackoffStrategy(500 * time.Millisecond)
+		jittered := JitterBackoffStrategy(base, -0.5)
+
+		for range 10 {
+			delay := jittered(0)
+			assert.Equal(t, 500*time.Millisecond, delay, "Negative fraction should return exact base delay")
+		}
+	})
+
+	t.Run("ResultNeverNegative", func(t *testing.T) {
+		// Use a very high fraction to try to produce negative results.
+		base := DefaultBackoffStrategy(10 * time.Millisecond)
+		jittered := JitterBackoffStrategy(base, 2.0)
+
+		for range 1000 {
+			delay := jittered(0)
+			assert.GreaterOrEqual(t, delay, time.Duration(0), "Jittered delay should never be negative")
+		}
+	})
+
+	t.Run("WorksWithExponentialBackoff", func(t *testing.T) {
+		base := ExponentialBackoffStrategy(100*time.Millisecond, 2.0, 10*time.Second)
+		jittered := JitterBackoffStrategy(base, 0.1)
+
+		// Attempt 0: base = 100ms, jitter +/-10%.
+		delay := jittered(0)
+		assert.GreaterOrEqual(t, delay, 90*time.Millisecond)
+		assert.LessOrEqual(t, delay, 110*time.Millisecond)
+
+		// Attempt 2: base = 400ms, jitter +/-10%.
+		delay = jittered(2)
+		assert.GreaterOrEqual(t, delay, 360*time.Millisecond)
+		assert.LessOrEqual(t, delay, 440*time.Millisecond)
+	})
+}
+
+func TestDefaultBackoffStrategy(t *testing.T) {
+	strategy := DefaultBackoffStrategy(2 * time.Second)
+	assert.Equal(t, 2*time.Second, strategy(0))
+	assert.Equal(t, 2*time.Second, strategy(5))
+}
+
+func TestLinearBackoffStrategy(t *testing.T) {
+	strategy := LinearBackoffStrategy(1 * time.Second)
+	assert.Equal(t, 1*time.Second, strategy(0))
+	assert.Equal(t, 2*time.Second, strategy(1))
+	assert.Equal(t, 3*time.Second, strategy(2))
+}
+
+func TestExponentialBackoffStrategy(t *testing.T) {
+	strategy := ExponentialBackoffStrategy(100*time.Millisecond, 2.0, 5*time.Second)
+	assert.Equal(t, 100*time.Millisecond, strategy(0))
+	assert.Equal(t, 200*time.Millisecond, strategy(1))
+	assert.Equal(t, 400*time.Millisecond, strategy(2))
+
+	// Should cap at maxBackoffTime.
+	assert.Equal(t, 5*time.Second, strategy(10))
+}

@@ -1,0 +1,66 @@
+package browser
+
+import (
+	"github.com/agentable/go-orderedobject"
+
+	"github.com/agentable/go-requests"
+)
+
+type profile struct {
+	name    string
+	headers *orderedobject.Object[[]string]
+	http2   bool
+}
+
+// Chrome145 returns a fixed Chrome 145 identity profile.
+func Chrome145() requests.Profile {
+	return profile{
+		name:    "Chrome145",
+		headers: chromeHeaders(),
+		http2:   true,
+	}
+}
+
+// Firefox148 returns a fixed Firefox 148 identity profile.
+func Firefox148() requests.Profile {
+	return profile{
+		name:    "Firefox148",
+		headers: firefoxHeaders(),
+		http2:   true,
+	}
+}
+
+func (p profile) Name() string {
+	return p.name
+}
+
+func (p profile) Options() []requests.Option {
+	opts := []requests.Option{requests.WithOrderedHeaders(p.headers)}
+	if p.http2 {
+		opts = append(opts, requests.WithHTTP2())
+	}
+	return opts
+}
+
+func chromeHeaders() *orderedobject.Object[[]string] {
+	return baseHeaders("en-US,en;q=0.9").
+		Set("Sec-CH-UA", []string{`"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"`}).
+		Set("Sec-CH-UA-Mobile", []string{"?0"}).
+		Set("Sec-CH-UA-Platform", []string{`"Windows"`}).
+		Set("User-Agent", []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"})
+}
+
+func firefoxHeaders() *orderedobject.Object[[]string] {
+	return baseHeaders("en-US,en;q=0.5").
+		Set("User-Agent", []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0"})
+}
+
+func baseHeaders(acceptLanguage string) *orderedobject.Object[[]string] {
+	return orderedobject.New[[]string]().
+		Set(":authority", nil).
+		Set(":method", nil).
+		Set(":path", nil).
+		Set(":scheme", nil).
+		Set("Accept-Encoding", []string{"gzip, deflate"}).
+		Set("Accept-Language", []string{acceptLanguage})
+}

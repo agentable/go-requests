@@ -1,0 +1,57 @@
+# Middleware Architecture Specs
+
+## Overview
+
+Middleware wraps request execution. This spec defines the middleware signature, composition order, and the public behavior of the built-in middleware package.
+
+## Signature
+
+The middleware contract is:
+
+```go
+type Middleware func(next MiddlewareHandlerFunc) MiddlewareHandlerFunc
+```
+
+A middleware receives the next handler and returns a new handler.
+
+## Composition Model
+
+Middleware may be attached at two layers:
+
+- client layer through `WithMiddleware` during `New` or `Clone`
+- request layer through `RequestBuilder.AddMiddleware`
+
+Within each layer, middleware runs in registration order.
+
+Across layers, client middleware wraps request middleware. The effective stack is:
+
+1. client middleware
+2. request middleware
+3. final HTTP execution handler
+
+> **Why**: Client middleware expresses cross-cutting policy for all requests, while request middleware expresses one-shot behavior closer to the transport attempt.
+>
+> **Rejected**: A single undifferentiated middleware list shared by all requests.
+
+## Built-in Middleware
+
+The `middlewares` package defines:
+
+- `HeaderMiddleware`, which adds headers to every request it wraps
+- `CookieMiddleware`, which adds cookies to every request it wraps
+
+## Mutation Contract
+
+`WithMiddleware` contributes client-level middleware during construction or cloning. `RequestBuilder.AddMiddleware` mutates one builder in place and does not return a fluent builder.
+
+## Forbidden
+
+- Do not use a two-argument middleware signature.
+- Do not assume `RequestBuilder.AddMiddleware` returns `*RequestBuilder`.
+
+## Contract Invariants
+
+- The middleware function signature is explicit.
+- Layering and execution order are explicit.
+- The built-in middleware contracts are explicit.
+- The construction-time client middleware path and request-local mutator are explicit.

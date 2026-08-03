@@ -1,0 +1,300 @@
+version: '3'
+
+vars:
+  PROJECT_ROOT:
+    sh: pwd
+  GOBIN: '{{.PROJECT_ROOT}}/bin'
+  GOLANGCI_LINT_LOCAL_BINARY: '{{.GOBIN}}/golangci-lint'
+  GOVULNCHECK_LOCAL_BINARY: '{{.GOBIN}}/govulncheck'
+  REQUIRED_GOLANGCI_LINT_VERSION:
+    sh: cat .golangci.version 2>/dev/null || echo "2.12.2"
+  REQUIRED_GOVULNCHECK_VERSION:
+    sh: cat .govulncheck.version 2>/dev/null || echo "v1.4.0"
+  RELEASE_VERSION:
+    sh: awk '$1 == "github.com/agentable/go-requests" { print $2; exit }' browser/go.mod
+  GOLANGCI_LINT_BINARY:
+    sh: |
+      required="$(cat .golangci.version 2>/dev/null || echo "2.12.2")"
+      for tool in "$(command -v golangci-lint 2>/dev/null || true)" "{{.GOLANGCI_LINT_LOCAL_BINARY}}"; do
+        [ -n "$tool" ] || continue
+        [ -x "$tool" ] || continue
+        version="$("$tool" version --format short 2>/dev/null || "$tool" version --short 2>/dev/null || true)"
+        if [ "$version" = "$required" ]; then
+          echo "$tool"
+          exit 0
+        fi
+      done
+      echo "{{.GOLANGCI_LINT_LOCAL_BINARY}}"
+  GOLANGCI_LINT_VERSION:
+    sh: |
+      {{.GOLANGCI_LINT_BINARY}} version --format short 2>/dev/null ||
+      {{.GOLANGCI_LINT_BINARY}} version --short 2>/dev/null ||
+      echo "not-installed"
+  GOVULNCHECK_BINARY:
+    sh: |
+      required="$(cat .govulncheck.version 2>/dev/null || echo "v1.4.0")"
+      for tool in "$(command -v govulncheck 2>/dev/null || true)" "{{.GOVULNCHECK_LOCAL_BINARY}}"; do
+        [ -n "$tool" ] || continue
+        [ -x "$tool" ] || continue
+        version="$("$tool" -version 2>/dev/null | awk '/^Scanner:/ { sub(/^govulncheck@/, "", $2); print $2; exit }')"
+        if [ "$version" = "$required" ]; then
+          echo "$tool"
+          exit 0
+        fi
+      done
+      echo "{{.GOVULNCHECK_LOCAL_BINARY}}"
+  GOVULNCHECK_VERSION:
+    sh: |
+      {{.GOVULNCHECK_BINARY}} -version 2>/dev/null | awk '/^Scanner:/ { sub(/^govulncheck@/, "", $2); print $2; exit }' ||
+      echo "not-installed"
+  MODULES:
+    sh: |
+      find . -mindepth 2 -name go.mod \
+        -not -path '*/vendor/*' \
+        -not -path '*/.*' \
+        -exec dirname {} \; | sed 's|^\./||' | sort
+
+env:
+  GOBIN: '{{.GOBIN}}'
+
+tasks:
+  default:
+    desc: Run lint and test
+    cmds:
+      - task: lint
+      - task: test
+
+  help:
+    desc: Show this help message
+    cmds:
+      - echo "Go HTTP Requests Library"
+      - echo "Available targets:"
+      - task --list
+    silent: true
+
+  clean:
+    desc: Clean build artifacts and caches
+    cmds:
+      - echo "Cleaning build artifacts..."
+      - rm -rf {{.GOBIN}}
+      - go clean -cache -testcache || true
+
+  deps:
+    desc: Download Go module dependencies
+    cmds:
+      - echo "Downloading dependencies..."
+      - go mod download
+      - go mod tidy
+
+  deps:update:
+    desc: Update dependencies for the root module and any nested modules
+    cmds:
+      - |
+        set -e
+        echo "Updating dependencies..."
+        MODULES=". $(find . -mindepth 2 -name go.mod \
+          -not -path '*/vendor/*' -not -path '*/.*' \
+          -exec dirname {} \; | sort)"
+        for dir in $MODULES; do
+          echo "==> $dir"
+          (
+            cd "$dir"
+            replaced=$(awk '
+              /^replace[[:space:]]+[^(]/ { print $2 }
+              /^replace[[:space:]]*\(/ { f=1; next }
+              f && /^\)/ { f=0; next }
+              f && /=>/ { print $1 }
+            ' go.mod)
+            deps=$(awk '
+              /^require[[:space:]]+[^(]/ { print $2 }
+              /^require[[:space:]]*\(/ { f=1; next }
+              f && /^\)/ { f=0; next }
+              f && !/\/\/ indirect/ && NF >= 2 { print $1 }
+            ' go.mod | while read -r dep; do
+              echo "$replaced" | grep -qxF "$dep" || echo "$dep"
+            done | tr '\n' ' ')
+            if [ -n "$deps" ]; then
+              go get -u $deps
+            fi
+            go mod tidy
+          )
+        done
+        if [ -f go.work ]; then
+          echo "==> go work sync"
+          go work sync
+        fi
+
+  test:
+    desc: Run all tests with race detection
+    cmds:
+      - echo "Running all tests..."
+      - go test -race ./...
+
+  test:all:
+    desc: Run tests for root and extension modules
+    cmds:
+      - echo "Running root module tests..."
+      - go test -race ./...
+      - for:
+          var: MODULES
+        cmd: |
+          echo "Running tests in {{.ITEM}}..."
+          cd {{.ITEM}} && go test -race ./...
+
+  test:published:
+    desc: Verify extension modules against the published root module
+    cmds:
+      - |
+        set -e
+        root="github.com/agentable/go-requests@{{.RELEASE_VERSION}}"
+        echo "Checking published root module $root..."
+        GOPROXY=direct GOWORK=off go list -m "$root" >/dev/null
+      - for:
+          var: MODULES
+        cmd: |
+          set -e
+          expected="{{.RELEASE_VERSION}}"
+          required="$(cd {{.ITEM}} && awk '$1 == "github.com/agentable/go-requests" { print $2 }' go.mod)"
+          if [ "$required" != "$expected" ]; then
+            echo "{{.ITEM}} requires github.com/agentable/go-requests@$required, expected $expected"
+            exit 1
+          fi
+          echo "Testing {{.ITEM}} outside go.work..."
+          cd {{.ITEM}} && GOWORK=off go test ./...
+
+  lint:
+    desc: Run all linters
+    deps:
+      - golangci-lint
+      - tidy-lint
+
+  lint:all:
+    desc: Run linters for root and extension modules
+    cmds:
+      - task: lint
+      - for:
+          var: MODULES
+        cmd: |
+          echo "Running linters in {{.ITEM}}..."
+          cd {{.ITEM}} && {{.GOLANGCI_LINT_BINARY}} run --timeout=30m --concurrency=1 --path-prefix {{.ITEM}}
+
+  install-golangci-lint:
+    desc: Install golangci-lint with the required version
+    cmds:
+      - mkdir -p "{{.GOBIN}}"
+      - |
+        if [ "{{.GOLANGCI_LINT_VERSION}}" != "{{.REQUIRED_GOLANGCI_LINT_VERSION}}" ]; then
+          echo "Installing golangci-lint v{{.REQUIRED_GOLANGCI_LINT_VERSION}}..."
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v{{.REQUIRED_GOLANGCI_LINT_VERSION}}
+          echo "golangci-lint v{{.REQUIRED_GOLANGCI_LINT_VERSION}} installed successfully"
+        fi
+    status:
+      - test "{{.GOLANGCI_LINT_VERSION}}" = "{{.REQUIRED_GOLANGCI_LINT_VERSION}}"
+
+  install-govulncheck:
+    desc: Install govulncheck with the required version
+    cmds:
+      - mkdir -p "{{.GOBIN}}"
+      - |
+        if [ "{{.GOVULNCHECK_VERSION}}" != "{{.REQUIRED_GOVULNCHECK_VERSION}}" ]; then
+          echo "Installing govulncheck {{.REQUIRED_GOVULNCHECK_VERSION}}..."
+          go install golang.org/x/vuln/cmd/govulncheck@{{.REQUIRED_GOVULNCHECK_VERSION}}
+          echo "govulncheck {{.REQUIRED_GOVULNCHECK_VERSION}} installed successfully"
+        fi
+    status:
+      - test "{{.GOVULNCHECK_VERSION}}" = "{{.REQUIRED_GOVULNCHECK_VERSION}}"
+
+  golangci-lint:
+    desc: Run golangci-lint
+    deps:
+      - install-golangci-lint
+    cmds:
+      - '{{.GOLANGCI_LINT_BINARY}} version'
+      - echo "Running golangci-lint..."
+      - '{{.GOLANGCI_LINT_BINARY}} run --timeout=30m --concurrency=1 --path-prefix=.'
+
+  tidy-lint:
+    desc: Check if go.mod and go.sum are tidy
+    cmds:
+      - echo "Checking go.mod and go.sum are tidy..."
+      - |
+        before="$(git diff -- go.mod go.sum)"
+        go mod tidy
+        after="$(git diff -- go.mod go.sum)"
+        if [ "$before" != "$after" ]; then
+          git diff -- go.mod go.sum
+          exit 1
+        fi
+
+  tidy:all:
+    desc: Run go mod tidy for root and extension modules
+    cmds:
+      - echo "Tidying root module..."
+      - go mod tidy
+      - for:
+          var: MODULES
+        cmd: |
+          echo "Tidying {{.ITEM}}..."
+          cd {{.ITEM}} && go mod tidy
+
+  yamllint:
+    desc: Run yamllint
+    cmds:
+      - yamllint -s .
+
+  vuln:
+    desc: Run govulncheck
+    deps:
+      - install-govulncheck
+    cmds:
+      - '{{.GOVULNCHECK_BINARY}} ./...'
+
+  vuln:all:
+    desc: Run govulncheck for root and extension modules
+    deps:
+      - install-govulncheck
+    cmds:
+      - echo "Running govulncheck for root..."
+      - '{{.GOVULNCHECK_BINARY}} ./...'
+      - for:
+          var: MODULES
+        cmd: |
+          echo "Running govulncheck in {{.ITEM}}..."
+          cd {{.ITEM}} && {{.GOVULNCHECK_BINARY}} ./...
+
+  fmt:
+    desc: Format Go code
+    deps:
+      - install-golangci-lint
+    cmds:
+      - echo "Formatting Go code..."
+      - '{{.GOLANGCI_LINT_BINARY}} fmt ./...'
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - echo "Running go vet..."
+      - go vet ./...
+
+  verify:
+    desc: Run all verification steps (deps, format, vet, lint, test, vuln)
+    cmds:
+      - task: deps
+      - task: fmt
+      - task: vet
+      - task: lint
+      - task: test
+      - task: vuln
+      - echo "All verification steps completed successfully ✅"
+
+  verify:all:
+    desc: Run full verification for root and extension modules
+    cmds:
+      - task: deps
+      - task: fmt
+      - task: vet
+      - task: tidy:all
+      - task: lint:all
+      - task: test:all
+      - task: vuln:all
+      - echo "All workspace verification steps completed successfully ✅"

@@ -1,0 +1,88 @@
+package requests
+
+import (
+	"fmt"
+	"io"
+	"log/slog"
+)
+
+// Level represents a log level.
+type Level int
+
+const (
+	// LevelDebug enables debug logging.
+	LevelDebug Level = iota
+	// LevelInfo enables info logging.
+	LevelInfo
+	// LevelWarn enables warning logging.
+	LevelWarn
+	// LevelError enables error logging.
+	LevelError
+)
+
+// Logger receives formatted diagnostic messages emitted by a Client.
+type Logger interface {
+	// Debugf logs a message at the Debug level.
+	Debugf(format string, v ...any)
+	// Infof logs a message at the Info level.
+	Infof(format string, v ...any)
+	// Warnf logs a message at the Warn level.
+	Warnf(format string, v ...any)
+	// Errorf logs a message at the Error level.
+	Errorf(format string, v ...any)
+}
+
+// DefaultLogger is a default logger that uses `slog` as the underlying logger.
+type DefaultLogger struct {
+	logger *slog.Logger
+	level  *slog.LevelVar
+}
+
+// Debugf logs a message at the Debug level.
+func (l *DefaultLogger) Debugf(format string, v ...any) {
+	l.logger.Debug(fmt.Sprintf(format, v...))
+}
+
+// Infof logs a message at the Info level.
+func (l *DefaultLogger) Infof(format string, v ...any) {
+	l.logger.Info(fmt.Sprintf(format, v...))
+}
+
+// Warnf logs a message at the Warn level.
+func (l *DefaultLogger) Warnf(format string, v ...any) {
+	l.logger.Warn(fmt.Sprintf(format, v...))
+}
+
+// Errorf logs a message at the Error level.
+func (l *DefaultLogger) Errorf(format string, v ...any) {
+	l.logger.Error(fmt.Sprintf(format, v...))
+}
+
+// SetLevel sets the log level of the logger.
+func (l *DefaultLogger) SetLevel(level Level) {
+	switch level {
+	case LevelDebug:
+		l.level.Set(slog.LevelDebug)
+	case LevelInfo:
+		l.level.Set(slog.LevelInfo)
+	case LevelWarn:
+		l.level.Set(slog.LevelWarn)
+	case LevelError:
+		l.level.Set(slog.LevelError)
+	}
+}
+
+// NewDefaultLogger creates a new `DefaultLogger` with the given output and log level.
+func NewDefaultLogger(output io.Writer, level Level) *DefaultLogger {
+	levelVar := &slog.LevelVar{}
+	textHandler := slog.NewTextHandler(output, &slog.HandlerOptions{
+		Level: levelVar,
+	})
+	logger := &DefaultLogger{
+		logger: slog.New(textHandler),
+		level:  levelVar,
+	}
+
+	logger.SetLevel(level)
+	return logger
+}

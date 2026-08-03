@@ -1,0 +1,2427 @@
+package requests
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/xml"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/agentable/go-orderedobject"
+	"github.com/go-json-experiment/json"
+	"github.com/stretchr/testify/assert"
+	"github.com/test-go/testify/require"
+)
+
+func TestRequestNilResponseError(t *testing.T) {
+	t.Parallel()
+
+	client := newTestClient(t, WithBaseURL("https://example.com"))
+	client.addMiddleware(func(MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+		return func(*http.Request) (*http.Response, error) {
+			return nil, nil
+		}
+	})
+
+	_, err := client.Get("/").Send(context.Background())
+	assert.ErrorIs(t, err, ErrResponseNil)
+}
+
+func TestOrderedHeadersAttachMetadataAndApplyHeaders(t *testing.T) {
+	headers := orderedobject.New[[]string]().
+		Set("X-First", []string{"1"}).
+		Set(":authority", []string{"metadata-only"}).
+		Set("X-Second", []string{"2a", "2b"})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "1", r.Header.Get("X-First"))
+		assert.Equal(t, []string{"2a", "2b"}, r.Header.Values("X-Second"))
+		assert.Empty(t, r.Header.Values(":authority"))
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t)
+	client.addMiddleware(func(next MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+		return func(req *http.Request) (*http.Response, error) {
+			ordered, ok := OrderedHeaders(req)
+			require.True(t, ok)
+			assert.Equal(t, []string{"X-First", ":authority", "X-Second"}, ordered.Keys())
+			first, ok := ordered.Get("X-First")
+			require.True(t, ok)
+			assert.Equal(t, []string{"1"}, first)
+			return next(req)
+		}
+	})
+
+	req := client.Get(server.URL).OrderedHeaders(headers)
+	headers.Set("X-First", []string{"mutated"})
+
+	resp, err := req.Send(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, resp.Close())
+}
+
+func TestOrderedHeadersCaseInsensitiveDuplicatesDoNotLeakAfterOverride(t *testing.T) {
+	headers := orderedobject.New[[]string]().
+		Set("X-Dupe", []string{"one"}).
+		Set("x-dupe", []string{"two"}).
+		Set("X-Keep", []string{"keep"})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t)
+	client.addMiddleware(func(next MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+		return func(req *http.Request) (*http.Response, error) {
+			assert.Equal(t, []string{"request"}, req.Header.Values("X-Dupe"))
+
+			ordered, ok := OrderedHeaders(req)
+			require.True(t, ok)
+			assert.Equal(t, []string{"X-Dupe", "X-Keep"}, ordered.Keys())
+			dupe, ok := ordered.Get("X-Dupe")
+			require.True(t, ok)
+			assert.Equal(t, []string{"request"}, dupe)
+
+			return next(req)
+		}
+	})
+
+	resp, err := client.Get(server.URL).
+		OrderedHeaders(headers).
+		Header("x-dupe", "request").
+		Send(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, resp.Close())
+}
+
+func TestOrderedHeadersNilClearsRequestHeaders(t *testing.T) {
+	t.Parallel()
+
+	headers := orderedobject.New[[]string]().Set("X-First", []string{"1"})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Empty(t, r.Header.Get("X-First"))
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t)
+	client.addMiddleware(func(next MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+		return func(req *http.Request) (*http.Response, error) {
+			_, ok := OrderedHeaders(req)
+			assert.False(t, ok)
+			return next(req)
+		}
+	})
+
+	resp, err := client.Get(server.URL).
+		OrderedHeaders(headers).
+		OrderedHeaders(nil).
+		Send(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, resp.Close())
+}
+
+func TestSetDefaultOrderedHeadersNilClearsDefaults(t *testing.T) {
+	t.Parallel()
+
+	headers := orderedobject.New[[]string]().Set("X-Default", []string{"1"})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Empty(t, r.Header.Get("X-Default"))
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, WithOrderedHeaders(headers))
+	client.setDefaultOrderedHeaders(nil)
+	client.addMiddleware(func(next MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+		return func(req *http.Request) (*http.Response, error) {
+			_, ok := OrderedHeaders(req)
+			assert.False(t, ok)
+			return next(req)
+		}
+	})
+
+	resp, err := client.Get(server.URL).Send(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, resp.Close())
+}
+
+func TestOrderedHeadersMergeClientDefaultsAndRequestOverrides(t *testing.T) {
+	clientHeaders := orderedobject.New[[]string]().
+		Set("X-First", []string{"client"}).
+		Set(":authority", []string{"metadata-only"}).
+		Set("X-Shared", []string{"client"})
+	requestHeaders := orderedobject.New[[]string]().
+		Set("X-Shared", []string{"request"}).
+		Set("X-Second", []string{"request"})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "client", r.Header.Get("X-First"))
+		assert.Equal(t, "request", r.Header.Get("X-Shared"))
+		assert.Equal(t, "request", r.Header.Get("X-Second"))
+		assert.Empty(t, r.Header.Values(":authority"))
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, WithOrderedHeaders(clientHeaders))
+	clientHeaders.Set("X-First", []string{"mutated"})
+	client.addMiddleware(func(next MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+		return func(req *http.Request) (*http.Response, error) {
+			ordered, ok := OrderedHeaders(req)
+			require.True(t, ok)
+			assert.Equal(t, []string{"X-First", ":authority", "X-Shared", "X-Second"}, ordered.Keys())
+
+			shared, ok := ordered.Get("X-Shared")
+			require.True(t, ok)
+			assert.Equal(t, []string{"request"}, shared)
+
+			ordered.Set("X-First", []string{"changed"})
+			again, ok := OrderedHeaders(req)
+			require.True(t, ok)
+			first, ok := again.Get("X-First")
+			require.True(t, ok)
+			assert.Equal(t, []string{"client"}, first)
+			return next(req)
+		}
+	})
+
+	req := client.Get(server.URL).OrderedHeaders(requestHeaders)
+	requestHeaders.Set("X-Shared", []string{"mutated"})
+
+	resp, err := req.Send(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, resp.Close())
+}
+
+func TestOrderedHeadersStaySyncedWithHeaderHelpers(t *testing.T) {
+	headers := orderedobject.New[[]string]().
+		Set("X-First", []string{"1"}).
+		Set("X-Delete", []string{"remove"})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, []string{"2", "3"}, r.Header.Values("X-First"))
+		assert.Equal(t, "4", r.Header.Get("X-Added"))
+		assert.Empty(t, r.Header.Get("X-Delete"))
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		assert.Equal(t, "application/json", r.Header.Get("Accept"))
+		assert.Equal(t, "agent", r.Header.Get("User-Agent"))
+		assert.Equal(t, "https://example.com", r.Header.Get("Referer"))
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t)
+	client.addMiddleware(func(next MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+		return func(req *http.Request) (*http.Response, error) {
+			ordered, ok := OrderedHeaders(req)
+			require.True(t, ok)
+			assert.Equal(t, []string{
+				"X-First",
+				"X-Added",
+				"Content-Type",
+				"Accept",
+				"User-Agent",
+				"Referer",
+			}, ordered.Keys())
+
+			first, ok := ordered.Get("X-First")
+			require.True(t, ok)
+			assert.Equal(t, []string{"2", "3"}, first)
+
+			contentType, ok := ordered.Get("Content-Type")
+			require.True(t, ok)
+			assert.Equal(t, []string{"application/json"}, contentType)
+			return next(req)
+		}
+	})
+
+	resp, err := client.Post(server.URL).
+		OrderedHeaders(headers).
+		Header("x-first", "2").
+		AddHeader("X-FIRST", "3").
+		AddHeader("X-Added", "4").
+		DelHeader("x-delete").
+		ContentType("text/plain").
+		Accept("application/json").
+		UserAgent("agent").
+		Referer("https://example.com").
+		JSON(map[string]string{"hello": "world"}).
+		Send(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, resp.Close())
+}
+
+func TestOrderedHeadersStaySyncedWithTextContentType(t *testing.T) {
+	headers := orderedobject.New[[]string]().
+		Set("X-First", []string{"1"})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "text/plain", r.Header.Get("Content-Type"))
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t)
+	client.addMiddleware(func(next MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+		return func(req *http.Request) (*http.Response, error) {
+			ordered, ok := OrderedHeaders(req)
+			require.True(t, ok)
+			assert.Equal(t, []string{"X-First", "Content-Type"}, ordered.Keys())
+			contentType, ok := ordered.Get("Content-Type")
+			require.True(t, ok)
+			assert.Equal(t, []string{"text/plain"}, contentType)
+			return next(req)
+		}
+	})
+
+	resp, err := client.Post(server.URL).
+		OrderedHeaders(headers).
+		Text("hello").
+		Send(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, resp.Close())
+}
+
+func TestOrderedHeadersDropClientMetadataWhenPlainRequestHeaderOverrides(t *testing.T) {
+	clientHeaders := orderedobject.New[[]string]().
+		Set("X-First", []string{"client"}).
+		Set("X-Shared", []string{"client"})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "client", r.Header.Get("X-First"))
+		assert.Equal(t, "request", r.Header.Get("X-Shared"))
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, WithOrderedHeaders(clientHeaders))
+	client.addMiddleware(func(next MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+		return func(req *http.Request) (*http.Response, error) {
+			ordered, ok := OrderedHeaders(req)
+			require.True(t, ok)
+			assert.Equal(t, []string{"X-First"}, ordered.Keys())
+			return next(req)
+		}
+	})
+
+	resp, err := client.Get(server.URL).Header("X-Shared", "request").Send(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, resp.Close())
+}
+
+func TestHeadersPreserveMultipleValuesWhenOverridingOrderedDefaults(t *testing.T) {
+	clientHeaders := orderedobject.New[[]string]().
+		Set("X-Keep", []string{"default"}).
+		Set("X-Multi", []string{"default"})
+
+	client := newTestClient(t, WithOrderedHeaders(clientHeaders))
+	client.addMiddleware(func(next MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+		return func(req *http.Request) (*http.Response, error) {
+			assert.Equal(t, []string{"default"}, req.Header.Values("X-Keep"))
+			assert.Equal(t, []string{"one", "two"}, req.Header.Values("X-Multi"))
+
+			ordered, ok := OrderedHeaders(req)
+			require.True(t, ok)
+			assert.Equal(t, []string{"X-Keep"}, ordered.Keys())
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{},
+				Body:       http.NoBody,
+				Request:    req,
+			}, nil
+		}
+	})
+
+	resp, err := client.Get("https://example.com").
+		Headers(http.Header{"X-Multi": []string{"one", "two"}}).
+		Send(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, resp.Close())
+}
+
+func TestRequestCancellation(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		_, _ = fmt.Fprintln(w, "This response may never be sent")
+	}))
+	defer server.Close()
+	defer close(release)
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(ErrTestTimeout)
+
+	_, err := client.Get("/").Send(ctx)
+	require.Error(t, err)
+	assert.ErrorIs(t, context.Cause(ctx), ErrTestTimeout)
+}
+
+// TestSendMethodQuery checks the Send method for handling query parameters.
+func TestSendMethodQuery(t *testing.T) {
+	// Start a test HTTP server.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Respond with the full URL received, including query parameters.
+		_, _ = fmt.Fprintln(w, r.URL.String())
+	}))
+	defer server.Close()
+
+	// Define a client with the test server's URL.
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	tests := []struct {
+		name          string
+		url           string            // URL to request, may include query params
+		additionalQPs map[string]string // Query params added via Query method
+		expectedURL   string            // Expected URL path and query received by the server
+	}{
+		{
+			name:        "URL only",
+			url:         "/test?param1=value1",
+			expectedURL: "/test?param1=value1",
+		},
+		{
+			name:          "Method only",
+			url:           "/test",
+			additionalQPs: map[string]string{"param2": "value2"},
+			expectedURL:   "/test?param2=value2",
+		},
+		{
+			name:          "URL and Method",
+			url:           "/test?param1=value1",
+			additionalQPs: map[string]string{"param2": "value2"},
+			expectedURL:   "/test?param1=value1&param2=value2",
+		},
+		{
+			name:          "Method preserves URL value",
+			url:           "/test?param1=value1",
+			additionalQPs: map[string]string{"param1": "value2"},
+			expectedURL:   "/test?param1=value1&param1=value2",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create a new RequestBuilder for each test case.
+			rb := client.NewRequestBuilder(http.MethodGet, tc.url)
+
+			// If there are additional query params defined, add them.
+			if tc.additionalQPs != nil {
+				for key, value := range tc.additionalQPs {
+					rb.Queries(map[string][]string{key: {value}})
+				}
+			}
+
+			// Send the request.
+			resp, err := rb.Send(context.Background())
+			assert.NoError(t, err)
+
+			// Read the response body.
+			bodyBytes, err := io.ReadAll(resp.Raw().Body)
+			assert.NoError(t, err)
+			body := string(bodyBytes)
+
+			// The body should contain the expected URL path and query.
+			assert.Contains(t, body, tc.expectedURL, "The server did not receive the expected URL.")
+		})
+	}
+}
+
+func TestSendPreservesRepeatedQueryValues(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintln(w, r.URL.RawQuery)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+	resp, err := client.Get("/search?tag=existing").
+		Query("tag", "builder").
+		Queries(url.Values{"tag": {"queries"}}).
+		Send(t.Context())
+	require.NoError(t, err)
+
+	body, err := io.ReadAll(resp.Raw().Body)
+	require.NoError(t, err)
+	got, err := url.ParseQuery(strings.TrimSpace(string(body)))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"existing", "builder", "queries"}, got["tag"])
+}
+
+func TestSendResolvesBaseURLAndRequestPath(t *testing.T) {
+	tests := []struct {
+		name        string
+		basePath    string
+		requestPath string
+		configure   func(*RequestBuilder)
+		wantURI     string
+	}{
+		{
+			name:        "joins base path and relative request path",
+			basePath:    "/api",
+			requestPath: "users",
+			wantURI:     "/api/users",
+		},
+		{
+			name:        "normalizes slash between base and request path",
+			basePath:    "/api/",
+			requestPath: "/users",
+			wantURI:     "/api/users",
+		},
+		{
+			name:        "preserves escaped path parameters",
+			basePath:    "/api",
+			requestPath: "/items/{id}",
+			configure: func(rb *RequestBuilder) {
+				rb.PathParam("id", "a/b")
+			},
+			wantURI: "/api/items/a%2Fb",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = fmt.Fprintln(w, r.URL.RequestURI())
+			}))
+			defer server.Close()
+
+			client := newTestClient(t, WithBaseURL(server.URL+tt.basePath))
+			rb := client.Get(tt.requestPath)
+			if tt.configure != nil {
+				tt.configure(rb)
+			}
+			resp, err := rb.Send(t.Context())
+			require.NoError(t, err)
+
+			body, err := io.ReadAll(resp.Raw().Body)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantURI, strings.TrimSpace(string(body)))
+		})
+	}
+}
+
+func TestSendAbsoluteURLOverridesBaseURL(t *testing.T) {
+	var baseCalled atomic.Bool
+	base := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		baseCalled.Store(true)
+		_, _ = fmt.Fprintln(w, "base")
+	}))
+	defer base.Close()
+	absolute := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintln(w, r.URL.RequestURI())
+	}))
+	defer absolute.Close()
+
+	client := newTestClient(t, WithBaseURL(base.URL+"/api"))
+	resp, err := client.Get(absolute.URL + "/direct").Send(t.Context())
+	require.NoError(t, err)
+
+	body, err := io.ReadAll(resp.Raw().Body)
+	require.NoError(t, err)
+	assert.Equal(t, "/direct", strings.TrimSpace(string(body)))
+	assert.False(t, baseCalled.Load())
+}
+
+func TestSendInvalidResolvedURLDoesNotDispatch(t *testing.T) {
+	var called atomic.Bool
+	client := newTestClient(t, WithHTTPClient(&http.Client{
+		Transport: testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+			called.Store(true)
+			return nil, nil
+		}),
+	}))
+	source := newTrackingReadCloser("payload")
+	body := NewMultipart().
+		Boundary(strings.Repeat("x", 71)).
+		File("upload", "payload.txt", source)
+
+	_, err := client.Post("/bad/%zz").Multipart(body).Send(t.Context())
+	require.Error(t, err)
+	assert.Zero(t, atomic.LoadInt64(&source.readBytes))
+	assert.False(t, source.closed.Load())
+	assert.False(t, called.Load())
+}
+
+type testAddress struct {
+	Postcode string `url:"postcode"`
+	City     string `url:"city"`
+}
+
+type testQueryStruct struct {
+	Name       string      `url:"name"`
+	Occupation string      `url:"occupation,omitempty"`
+	Age        int         `url:"age"`
+	IsActive   bool        `url:"is_active,int"`
+	Tags       []string    `url:"tags,comma"`
+	Address    testAddress `url:"addr"`
+}
+
+func TestQueryStructWithClient(t *testing.T) {
+	// Start a test HTTP server that JSON-encodes and echoes back the query parameters received
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queryParams := r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+
+		if err := json.MarshalWrite(w, queryParams); err != nil {
+			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	// Create an instance of the client, pointing to the test server
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	// Define the struct to be used for query parameters
+	exampleStruct := testQueryStruct{
+		Name:       "John Doe",
+		Occupation: "Developer",
+		Age:        30,
+		IsActive:   true,
+		Tags:       []string{"go", "programming"},
+		Address: testAddress{
+			Postcode: "1234",
+			City:     "GoCity",
+		},
+	}
+
+	// Send a request to the server using the client and the struct for query parameters
+	resp, err := client.NewRequestBuilder("GET", "/").QueriesStruct(exampleStruct).Send(context.Background())
+	assert.NoError(t, err)
+
+	// Read and verify the response
+	var response map[string][]string
+	err = resp.DecodeJSON(&response)
+	assert.NoError(t, err)
+
+	// Now we can assert the values directly
+	assert.Contains(t, response, "name")
+	assert.Equal(t, []string{"John Doe"}, response["name"])
+	assert.Contains(t, response, "occupation")
+	assert.Equal(t, []string{"Developer"}, response["occupation"])
+	assert.Contains(t, response, "age")
+	assert.Equal(t, []string{"30"}, response["age"])
+	assert.Contains(t, response, "is_active")
+	assert.Equal(t, []string{"1"}, response["is_active"])
+	assert.Contains(t, response, "tags")
+	assert.Equal(t, []string{"go,programming"}, response["tags"])
+
+	err = resp.Close()
+	assert.NoError(t, err)
+}
+
+type failingQueryValue struct{}
+
+func (failingQueryValue) EncodeValues(string, *url.Values) error {
+	return assert.AnError
+}
+
+func TestQueriesStructReturnsPreparationErrorWithoutDispatch(t *testing.T) {
+	var transportCalls atomic.Int64
+	client := newTestClient(t, WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+		transportCalls.Add(1)
+		return nil, fmt.Errorf("unexpected transport call")
+	})))
+	queryInput := struct {
+		Value failingQueryValue `url:"value"`
+	}{}
+
+	resp, err := client.Get("https://example.com").QueriesStruct(queryInput).Send(t.Context())
+
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, assert.AnError)
+	assert.Zero(t, transportCalls.Load())
+}
+
+type countingEncoder struct {
+	calls *atomic.Int64
+}
+
+func (e countingEncoder) Encode(any) (io.Reader, error) {
+	e.calls.Add(1)
+	return strings.NewReader("{}"), nil
+}
+
+func (countingEncoder) ContentType() string {
+	return "application/json"
+}
+
+type readErrorEncoder struct{}
+
+func (readErrorEncoder) Encode(any) (io.Reader, error) {
+	return failingReader{}, nil
+}
+
+func (readErrorEncoder) ContentType() string {
+	return "application/json"
+}
+
+type closeObservingReader struct {
+	io.Reader
+	closes *atomic.Int64
+}
+
+func (r closeObservingReader) Close() error {
+	r.closes.Add(1)
+	return nil
+}
+
+type closeObservingEncoder struct {
+	closes *atomic.Int64
+}
+
+func (e closeObservingEncoder) Encode(any) (io.Reader, error) {
+	return closeObservingReader{
+		Reader: strings.NewReader("{}"),
+		closes: e.closes,
+	}, nil
+}
+
+func (closeObservingEncoder) ContentType() string {
+	return "application/json"
+}
+
+func TestCustomEncoderReaderLifecycleIsReadOnly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	var closes atomic.Int64
+	client := newTestClient(t,
+		WithBaseURL(server.URL),
+		WithJSONEncoder(closeObservingEncoder{closes: &closes}),
+	)
+
+	resp, err := client.Post("/").JSON(struct{}{}).Send(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode())
+	assert.Zero(t, closes.Load())
+}
+
+func TestEncodedBodyReadErrorPreservesCauseWithoutDispatch(t *testing.T) {
+	var transportCalls atomic.Int64
+	client := newTestClient(t,
+		WithJSONEncoder(readErrorEncoder{}),
+		WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+			transportCalls.Add(1)
+			return nil, fmt.Errorf("unexpected transport call")
+		})),
+	)
+
+	resp, err := client.Post("https://example.com").JSON(struct{}{}).Send(t.Context())
+
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, errCodecRead)
+	assert.Zero(t, transportCalls.Load())
+}
+
+func TestFormReturnsPreparationErrorBeforeBodyEncoding(t *testing.T) {
+	var encoderCalls atomic.Int64
+	var transportCalls atomic.Int64
+	client := newTestClient(t,
+		WithJSONEncoder(countingEncoder{calls: &encoderCalls}),
+		WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+			transportCalls.Add(1)
+			return nil, fmt.Errorf("unexpected transport call")
+		})),
+	)
+	formInput := struct {
+		Value failingQueryValue `url:"value"`
+	}{}
+
+	resp, err := client.Post("https://example.com").Form(formInput).JSON(struct{}{}).Send(t.Context())
+
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, assert.AnError)
+	assert.Zero(t, encoderCalls.Load())
+	assert.Zero(t, transportCalls.Load())
+}
+
+func TestFormFieldsReturnsPreparationErrorFromSendStream(t *testing.T) {
+	var encoderCalls atomic.Int64
+	var transportCalls atomic.Int64
+	client := newTestClient(t,
+		WithJSONEncoder(countingEncoder{calls: &encoderCalls}),
+		WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+			transportCalls.Add(1)
+			return nil, fmt.Errorf("unexpected transport call")
+		})),
+	)
+	formInput := struct {
+		Value failingQueryValue `url:"value"`
+	}{}
+
+	resp, err := client.Post("https://example.com").
+		FormFields(formInput).
+		JSON(struct{}{}).
+		SendStream(t.Context())
+
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, assert.AnError)
+	assert.Zero(t, encoderCalls.Load())
+	assert.Zero(t, transportCalls.Load())
+}
+
+func TestRequestAuthReturnsPreparationErrorWithoutDispatch(t *testing.T) {
+	tests := []struct {
+		name string
+		auth AuthMethod
+	}{
+		{name: "nil", auth: nil},
+		{name: "typed nil", auth: (*nilAuth)(nil)},
+		{name: "empty basic", auth: BasicAuth{}},
+		{name: "empty bearer", auth: BearerAuth{}},
+		{name: "empty custom", auth: CustomAuth{}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var transportCalls atomic.Int64
+			client := newTestClient(t, WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+				transportCalls.Add(1)
+				return nil, fmt.Errorf("unexpected transport call")
+			})))
+
+			resp, err := client.Get("https://example.com").Auth(test.auth).Send(t.Context())
+
+			assert.Nil(t, resp)
+			assert.ErrorIs(t, err, ErrInvalidConfigValue)
+			assert.Zero(t, transportCalls.Load())
+		})
+	}
+}
+
+func TestRequestMiddlewareReturnsPreparationErrorWithoutDispatch(t *testing.T) {
+	var transportCalls atomic.Int64
+	client := newTestClient(t, WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+		transportCalls.Add(1)
+		return nil, fmt.Errorf("unexpected transport call")
+	})))
+	builder := client.Get("https://example.com")
+	builder.AddMiddleware(nil)
+
+	resp, err := builder.Send(t.Context())
+
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, ErrInvalidConfigValue)
+	assert.Zero(t, transportCalls.Load())
+}
+
+func TestRequestPreparationErrorKeepsFirstCause(t *testing.T) {
+	client := newTestClient(t)
+	queryInput := struct {
+		Value failingQueryValue `url:"value"`
+	}{}
+	source := newTrackingReadCloser("payload")
+	body := NewMultipart().
+		Boundary(strings.Repeat("x", 71)).
+		File("upload", "payload.txt", source)
+	builder := client.Get("https://example.com").
+		QueriesStruct(queryInput).
+		Auth(nil).
+		Multipart(body)
+
+	resp, err := builder.Send(t.Context())
+
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, assert.AnError)
+	assert.NotErrorIs(t, err, ErrInvalidConfigValue)
+	assert.Zero(t, atomic.LoadInt64(&source.readBytes))
+	assert.False(t, source.closed.Load())
+}
+
+func TestInvalidResolvedMethodFailsBeforeOpeningMultipart(t *testing.T) {
+	var transportCalls atomic.Int64
+	client := newTestClient(t, WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+		transportCalls.Add(1)
+		return nil, fmt.Errorf("unexpected transport call")
+	})))
+	source := newTrackingReadCloser("payload")
+	body := NewMultipart().
+		Boundary(strings.Repeat("x", 71)).
+		File("upload", "payload.txt", source)
+
+	resp, err := client.Request("bad method", "https://example.com").
+		Multipart(body).
+		Send(t.Context())
+
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, ErrRequestCreationFailed)
+	assert.Zero(t, atomic.LoadInt64(&source.readBytes))
+	assert.False(t, source.closed.Load())
+	assert.Zero(t, transportCalls.Load())
+}
+
+func TestNilRequestContextFailsBeforeOpeningMultipart(t *testing.T) {
+	var transportCalls atomic.Int64
+	client := newTestClient(t, WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+		transportCalls.Add(1)
+		return nil, fmt.Errorf("unexpected transport call")
+	})))
+	source := newTrackingReadCloser("payload")
+	body := NewMultipart().
+		Boundary(strings.Repeat("x", 71)).
+		File("upload", "payload.txt", source)
+
+	resp, err := client.Post("https://example.com").Multipart(body).Send(nil) //nolint:staticcheck // verifies nil context rejection
+
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, ErrRequestCreationFailed)
+	assert.Zero(t, atomic.LoadInt64(&source.readBytes))
+	assert.False(t, source.closed.Load())
+	assert.Zero(t, transportCalls.Load())
+}
+
+func TestMultipartProducerExitsWhenTransportRejectsRequest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			_ = req.Body.Close()
+			return nil, assert.AnError
+		})))
+		body := NewMultipart().Field("name", "value")
+
+		resp, err := client.Post("https://example.com").Multipart(body).Send(t.Context())
+
+		assert.Nil(t, resp)
+		assert.ErrorIs(t, err, assert.AnError)
+	})
+}
+
+type gatedReader struct {
+	ready  <-chan struct{}
+	reader io.Reader
+}
+
+func (r gatedReader) Read(p []byte) (int, error) {
+	<-r.ready
+	return r.reader.Read(p)
+}
+
+func TestMultipartStreamsAfterTransportStarts(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ready := make(chan struct{})
+		var requestBody []byte
+		client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			close(ready)
+			var err error
+			requestBody, err = io.ReadAll(req.Body)
+			if err != nil {
+				return nil, err
+			}
+			return &http.Response{
+				Status:     "200 OK",
+				StatusCode: http.StatusOK,
+				Header:     http.Header{},
+				Body:       http.NoBody,
+				Request:    req,
+			}, nil
+		})))
+		body := NewMultipart().File("upload", "payload.txt", gatedReader{
+			ready:  ready,
+			reader: strings.NewReader("payload"),
+		})
+
+		resp, err := client.Post("https://example.com").Multipart(body).Send(t.Context())
+
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode())
+		assert.Contains(t, string(requestBody), "payload")
+	})
+}
+
+func TestMultipartProducerExitsAfterRequestCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		started := make(chan struct{})
+		client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			close(started)
+			<-req.Context().Done()
+			_ = req.Body.Close()
+			return nil, req.Context().Err()
+		})))
+		ctx, cancel := context.WithCancel(t.Context())
+		result := make(chan error)
+
+		go func() {
+			_, err := client.Post("https://example.com").
+				Multipart(NewMultipart().Field("name", "value")).
+				Send(ctx)
+			result <- err
+		}()
+
+		<-started
+		cancel()
+		assert.ErrorIs(t, <-result, context.Canceled)
+	})
+}
+
+func TestHeaderManipulationMethods(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		assert.Equal(t, "Bearer token", r.Header.Get("Authorization"))
+		assert.Empty(t, r.Header.Get("X-Removed-Header"))
+
+		_, _ = fmt.Fprintln(w, "Headers received")
+	}))
+	defer server.Close()
+
+	rq := newTestClient(t, WithBaseURL(server.URL)).Get("/test-headers")
+	rq.Headers(http.Header{"Content-Type": []string{"application/json"}})
+	rq.AddHeader("Authorization", "Bearer token")
+	rq.Header("X-Modified-Header", "NewValue")
+	rq.AddHeader("X-Removed-Header", "OldValue")
+	rq.DelHeader("X-Removed-Header")
+
+	resp, err := rq.Send(context.Background())
+	assert.NoError(t, err)
+
+	responseBody, err := io.ReadAll(resp.Raw().Body)
+	assert.NoError(t, err)
+	assert.Contains(t, string(responseBody), "Headers received")
+}
+
+func TestUserAgentMethod(t *testing.T) {
+	// Start a test HTTP server that checks received User-Agent header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check User-Agent header
+		assert.Equal(t, "MyCustomUserAgent", r.Header.Get("User-Agent"))
+
+		_, _ = fmt.Fprintln(w, "User-Agent received")
+	}))
+	defer server.Close()
+
+	// Create an instance of the client, pointing to the test server
+	client := newTestClient(t, WithBaseURL(server.URL))
+	rq := client.Get("/test-user-agent")
+
+	// Set the User-Agent header using the UserAgent method
+	rq.UserAgent("MyCustomUserAgent")
+
+	// Send the request
+	resp, err := rq.Send(context.Background())
+	assert.NoError(t, err)
+
+	// Read and verify the response
+	responseBody, err := io.ReadAll(resp.Raw().Body)
+	assert.NoError(t, err)
+	assert.Contains(t, string(responseBody), "User-Agent received")
+}
+
+func TestContentTypeMethod(t *testing.T) {
+	// Start a test HTTP server that checks received Content-Type header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check Content-Type header
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+
+		_, _ = fmt.Fprintln(w, "Content-Type received")
+	}))
+	defer server.Close()
+
+	// Create an instance of the client, pointing to the test server
+	client := newTestClient(t, WithBaseURL(server.URL))
+	rq := client.Get("/test-content-type")
+
+	// Set the Content-Type header using the ContentType method
+	rq.ContentType("application/json")
+
+	// Send the request
+	resp, err := rq.Send(context.Background())
+	assert.NoError(t, err)
+
+	// Read and verify the response
+	responseBody, err := io.ReadAll(resp.Raw().Body)
+	assert.NoError(t, err)
+	assert.Contains(t, string(responseBody), "Content-Type received")
+}
+
+func TestAcceptMethod(t *testing.T) {
+	// Start a test HTTP server that checks received Accept header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check Accept header
+		assert.Equal(t, "application/xml", r.Header.Get("Accept"))
+
+		_, _ = fmt.Fprintln(w, "Accept received")
+	}))
+	defer server.Close()
+
+	// Create an instance of the client, pointing to the test server
+	client := newTestClient(t, WithBaseURL(server.URL))
+	rq := client.Get("/test-accept")
+
+	// Set the Accept header using the Accept method
+	rq.Accept("application/xml")
+
+	// Send the request
+	resp, err := rq.Send(context.Background())
+	assert.NoError(t, err)
+
+	// Read and verify the response
+	responseBody, err := io.ReadAll(resp.Raw().Body)
+	assert.NoError(t, err)
+	assert.Contains(t, string(responseBody), "Accept received")
+}
+
+func TestRefererMethod(t *testing.T) {
+	// Start a test HTTP server that checks received Referer header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check Referer header
+		assert.Equal(t, "https://example.com", r.Header.Get("Referer"))
+
+		_, _ = fmt.Fprintln(w, "Referer received")
+	}))
+	defer server.Close()
+
+	// Create an instance of the client, pointing to the test server
+	client := newTestClient(t, WithBaseURL(server.URL))
+	rq := client.Get("/test-referer")
+
+	// Set the Referer header
+	rq.Referer("https://example.com")
+
+	// Send the request
+	resp, err := rq.Send(context.Background())
+	assert.NoError(t, err)
+
+	// Read and verify the response
+	responseBody, err := io.ReadAll(resp.Raw().Body)
+	assert.NoError(t, err)
+	assert.Contains(t, string(responseBody), "Referer received")
+}
+
+func TestCookieManipulationMethods(t *testing.T) {
+	// Start a test HTTP server that checks received cookies
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check cookies
+		cookie1, err1 := r.Cookie("SessionID")
+		assert.NoError(t, err1)
+		assert.Equal(t, "12345", cookie1.Value)
+
+		cookie2, err2 := r.Cookie("AuthToken")
+		assert.NoError(t, err2)
+		assert.Equal(t, "abcdef", cookie2.Value)
+
+		// Ensure the deleted cookie is not present
+		_, err3 := r.Cookie("DeletedCookie")
+		assert.Error(t, err3) // We expect an error because the cookie should not be present
+
+		_, _ = fmt.Fprintln(w, "Cookies received")
+	}))
+	defer server.Close()
+
+	// Create an instance of the client, pointing to the test server
+	rq := newTestClient(t, WithBaseURL(server.URL)).Get("/test-cookies")
+	// Using SetCookies to set multiple cookies at once
+	rq.Cookies(map[string]string{
+		"SessionID":     "12345",
+		"AuthToken":     "abcdef",
+		"DeletedCookie": "should-be-deleted",
+	})
+	// Demonstrate individual cookie manipulation
+	rq.Cookie("SingleCookie", "single-value")
+	// Removing a previously set cookie
+	rq.DelCookie("DeletedCookie")
+
+	// Send the request
+	resp, err := rq.Send(context.Background())
+	assert.NoError(t, err)
+
+	// Read and verify the response
+	responseBody, err := io.ReadAll(resp.Raw().Body)
+	assert.NoError(t, err)
+	assert.Contains(t, string(responseBody), "Cookies received")
+}
+
+func TestPathParameterMethods(t *testing.T) {
+	// Start a test HTTP server that checks the received path for correctness
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check if the path is as expected
+		expectedPath := "/users/johnDoe/posts/123"
+		if r.URL.Path != expectedPath {
+			t.Errorf("expected path %s, got %s", expectedPath, r.URL.Path)
+		}
+		_, _ = fmt.Fprintln(w, "Path parameters received correctly")
+	}))
+	defer server.Close()
+
+	// Create an instance of the client, pointing to the test server
+	client := newTestClient(t, WithBaseURL(server.URL))
+	rq := client.Get("/users/{userId}/posts/{postId}")
+
+	// Using PathParams to set multiple path params at once
+	rq.PathParams(map[string]string{
+		"postId": "123",
+	})
+
+	// Demonstrate individual path parameter manipulation
+	rq.PathParam("userId", "johnDoe").PathParam("hello", "world")
+	rq.DelPathParam("hello")
+
+	// Send the request
+	resp, err := rq.Send(context.Background())
+	assert.NoError(t, err)
+
+	// Read and verify the response
+	responseBody, err := io.ReadAll(resp.Raw().Body)
+	assert.NoError(t, err)
+	assert.Contains(t, string(responseBody), "Path parameters received correctly")
+}
+
+func startEchoServer() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		response := map[string]string{
+			"body":        string(bodyBytes),
+			"contentType": r.Header.Get("Content-Type"),
+		}
+		if err := json.MarshalWrite(w, response); err != nil {
+			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		}
+	}))
+}
+
+func TestFormFields(t *testing.T) {
+	server := startEchoServer() // Starts a mock HTTP server that echoes back received requests
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	// Example form data using a map
+	formData := map[string]string{
+		"name": "Jane Doe",
+		"age":  "32",
+	}
+
+	resp, err := client.Post("/").
+		FormFields(formData). // Using FormFields to set form data
+		Send(context.Background())
+	assert.NoError(t, err, "Request should not fail")
+
+	var response map[string]string
+	err = resp.Decode(&response)
+	assert.NoError(t, err, "Response should be parsed without error")
+
+	// Validates that the form data was correctly encoded and sent in the request body
+	expectedEncodedFormData := url.Values{"name": {"Jane Doe"}, "age": {"32"}}.Encode()
+
+	assert.Equal(t, expectedEncodedFormData, response["body"], "The body content should match the encoded form data")
+	assert.Equal(t, "application/x-www-form-urlencoded", response["contentType"], "The content type should be application/x-www-form-urlencoded")
+}
+
+func TestFormField(t *testing.T) {
+	server := startEchoServer() // Simulated HTTP server
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	resp, err := client.Post("/").
+		FormField("name", "John Doe"). // Adding a single form field
+		Send(context.Background())
+	assert.NoError(t, err, "No error expected on sending request")
+
+	var response map[string]string
+	err = resp.Decode(&response)
+	assert.NoError(t, err, "Parsing response should not error")
+
+	// Validate that the single form field was correctly encoded and sent
+	expectedEncodedFormData := "name=John+Doe"
+	assert.Equal(t, expectedEncodedFormData, response["body"], "The body content should match the single form field")
+}
+
+func TestBodySelectionFormFieldReplacesJSONAndRemainsAdditive(t *testing.T) {
+	server := startEchoServer()
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	resp, err := client.Post("/").
+		JSON(map[string]string{"source": "json"}).
+		FormField("source", "form").
+		FormField("source", "second").
+		Send(t.Context())
+	require.NoError(t, err)
+
+	var response map[string]string
+	require.NoError(t, resp.Decode(&response))
+	assert.Equal(t, "source=form&source=second", response["body"])
+	assert.Equal(t, "application/x-www-form-urlencoded", response["contentType"])
+}
+
+func TestDelFormField(t *testing.T) {
+	server := startEchoServer() // Setup mock server
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	// Set initial form fields
+	initialFormData := map[string]string{
+		"name": "Jane Doe",
+		"age":  "32",
+	}
+
+	// Delete the "age" field before sending
+	resp, err := client.Post("/").
+		FormFields(initialFormData).
+		DelFormField("age"). // Removing an existing form field
+		Send(context.Background())
+	assert.NoError(t, err, "Expect no error on request send")
+
+	var response map[string]string
+	err = resp.Decode(&response)
+	assert.NoError(t, err, "Expect no error on response parse")
+
+	// Validates that the "age" field was correctly removed
+	expectedEncodedFormData := "name=Jane+Doe"
+	assert.Equal(t, expectedEncodedFormData, response["body"], "The body should match after deleting a field")
+}
+
+func TestFormBody(t *testing.T) {
+	server := startEchoServer()
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	// Example body data
+	bodyData := url.Values{"key": []string{"value"}}
+	encodedData := bodyData.Encode()
+
+	resp, err := client.Post("/").
+		Form(bodyData).
+		Send(context.Background())
+
+	assert.NoError(t, err)
+
+	var response map[string]string
+	err = resp.Decode(&response)
+	assert.NoError(t, err)
+
+	// Asserts
+	assert.Equal(t, encodedData, response["body"], "The body content should match.")
+	assert.Equal(t, "application/x-www-form-urlencoded", response["contentType"], "The content type should be set correctly.")
+}
+
+func TestJSON(t *testing.T) {
+	server := startEchoServer()
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	// Example JSON data
+	jsonData := map[string]any{"name": "John Doe", "age": 30}
+	jsonDataStr, _ := json.Marshal(jsonData)
+
+	resp, err := client.Post("/").
+		JSON(jsonData).
+		Send(context.Background())
+	assert.NoError(t, err)
+
+	var response map[string]string
+	err = resp.Decode(&response)
+	assert.NoError(t, err)
+
+	// Asserts
+	assert.JSONEq(t, string(jsonDataStr), response["body"], "The body content should match.")
+	assert.Equal(t, "application/json", response["contentType"], "The content type should be set to application/json.")
+}
+
+func TestBodySelectionJSONReplacesForm(t *testing.T) {
+	server := startEchoServer()
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+	payload := map[string]string{"source": "json"}
+
+	resp, err := client.Post("/").
+		Form(url.Values{"source": {"form"}}).
+		JSON(payload).
+		Send(t.Context())
+	require.NoError(t, err)
+
+	var response map[string]string
+	require.NoError(t, resp.Decode(&response))
+	assert.JSONEq(t, `{"source":"json"}`, response["body"])
+	assert.Equal(t, "application/json", response["contentType"])
+}
+
+func TestBodySelectionJSONNilEncodesNull(t *testing.T) {
+	server := startEchoServer()
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	resp, err := client.Post("/").JSON(nil).Send(t.Context())
+	require.NoError(t, err)
+
+	var response map[string]string
+	require.NoError(t, resp.Decode(&response))
+	assert.JSONEq(t, "null", response["body"])
+	assert.Equal(t, "application/json", response["contentType"])
+}
+
+func TestBodySelectionEmptyFormReplacesJSON(t *testing.T) {
+	server := startEchoServer()
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	resp, err := client.Post("/").
+		JSON(map[string]string{"source": "json"}).
+		Form(nil).
+		Send(t.Context())
+	require.NoError(t, err)
+
+	var response map[string]string
+	require.NoError(t, resp.Decode(&response))
+	assert.Empty(t, response["body"])
+	assert.Equal(t, "application/x-www-form-urlencoded", response["contentType"])
+}
+
+func TestBodySelectionNilMultipartReturnsPreparationError(t *testing.T) {
+	var transportCalls atomic.Int64
+	client := newTestClient(t, WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+		transportCalls.Add(1)
+		return nil, fmt.Errorf("unexpected transport call")
+	})))
+
+	resp, err := client.Post("https://example.com").
+		JSON(map[string]string{"source": "json"}).
+		Multipart(nil).
+		Send(t.Context())
+
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, ErrInvalidConfigValue)
+	assert.Zero(t, transportCalls.Load())
+}
+
+func TestXML(t *testing.T) {
+	server := startEchoServer()
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	// Example XML data
+	xmlData := struct {
+		XMLName xml.Name `xml:"Person"`
+		Name    string   `xml:"Name"`
+		Age     int      `xml:"Age"`
+	}{Name: "Jane Doe", Age: 32}
+	xmlDataStr, _ := xml.Marshal(xmlData)
+
+	resp, err := client.Post("/").
+		XML(xmlData).
+		Send(context.Background())
+	assert.NoError(t, err)
+
+	var response map[string]string
+	err = resp.Decode(&response)
+	assert.NoError(t, err)
+
+	// Asserts
+	assert.Equal(t, string(xmlDataStr), strings.TrimSpace(response["body"]), "The body content should match.")
+	assert.Equal(t, "application/xml", response["contentType"], "The content type should be set to application/xml.")
+}
+
+func TestFormWithURLValues(t *testing.T) {
+	server := startEchoServer()
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	// Example form data
+	formData := url.Values{
+		"name": []string{"Jane Doe"},
+		"age":  []string{"32"},
+	}
+
+	resp, err := client.Post("/").
+		Form(formData).
+		Send(context.Background())
+	assert.NoError(t, err)
+
+	var response map[string]string
+	err = resp.Decode(&response)
+	assert.NoError(t, err)
+
+	// Asserts
+	assert.Equal(t, formData.Encode(), response["body"], "The body content should match.")
+	assert.Equal(t, "application/x-www-form-urlencoded", response["contentType"], "The content type should be set correctly.")
+}
+
+func TestPrepareBodyWithFormFields(t *testing.T) {
+	builder := newTestClient(t).Post("/").Form(url.Values{
+		"name": {"Jane Doe"},
+		"age":  {"32"},
+	})
+
+	body, err := builder.prepareBody(&clientSnapshot{})
+	require.NoError(t, err)
+	assert.Equal(t, "application/x-www-form-urlencoded", body.contentType)
+
+	data, err := io.ReadAll(body.body)
+	require.NoError(t, err)
+	assert.Equal(t, url.Values{"name": {"Jane Doe"}, "age": {"32"}}.Encode(), string(data))
+}
+
+func TestDelQuery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, r.URL.RawQuery)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+	resp, err := client.Get("/").
+		Query("keep", "1").
+		Query("drop", "2").
+		DelQuery("drop").
+		Send(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, "keep=1", resp.String())
+}
+
+func TestRequestTimeout(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	defer close(release)
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+	_, err := client.Get("/").Timeout(50 * time.Millisecond).Send(context.Background())
+	require.Error(t, err)
+	assert.True(t, IsTimeout(err))
+}
+
+func TestFormFieldsWithStruct(t *testing.T) {
+	server := startEchoServer()
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+	formData := struct {
+		Name string `url:"name"`
+		Age  int    `url:"age"`
+	}{
+		Name: "Jane Doe",
+		Age:  32,
+	}
+
+	resp, err := client.Post("/").FormFields(formData).Send(context.Background())
+	assert.NoError(t, err)
+
+	var response map[string]string
+	err = resp.Decode(&response)
+	assert.NoError(t, err)
+	assert.Equal(t, url.Values{"name": {"Jane Doe"}, "age": {"32"}}.Encode(), response["body"])
+	assert.Equal(t, "application/x-www-form-urlencoded", response["contentType"])
+}
+
+func TestText(t *testing.T) {
+	server := startEchoServer()
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	// Example text data
+	textData := "This is a plain text body."
+
+	resp, err := client.Post("/").
+		Text(textData).
+		Send(context.Background())
+	assert.NoError(t, err)
+
+	var response map[string]string
+	err = resp.Decode(&response)
+	assert.NoError(t, err)
+
+	// Asserts
+	assert.Equal(t, textData, response["body"], "The body content should match.")
+	assert.Equal(t, "text/plain", response["contentType"], "The content type should be set to text/plain.")
+}
+
+func TestBytes(t *testing.T) {
+	server := startEchoServer()
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	// Example raw data
+	rawData := []byte("This is raw byte data.")
+
+	resp, err := client.Post("/").
+		Bytes(rawData).
+		ContentType("application/octet-stream"). // Explicitly set content type
+		Send(context.Background())
+	assert.NoError(t, err)
+
+	var response map[string]string
+	err = resp.Decode(&response)
+	assert.NoError(t, err)
+
+	// Asserts
+	assert.Equal(t, string(rawData), response["body"], "The body content should match.")
+	assert.Equal(t, "application/octet-stream", response["contentType"], "The content type should be set to application/octet-stream.")
+}
+
+func TestBytesPreservesBytesWithJSONContentType(t *testing.T) {
+	server := startEchoServer()
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+	rawData := []byte(`{"event":"created","ok":true}`)
+
+	resp, err := client.Post("/").
+		Bytes(rawData).
+		ContentType("application/json").
+		Send(t.Context())
+	require.NoError(t, err)
+
+	var response map[string]string
+	err = resp.Decode(&response)
+	require.NoError(t, err)
+
+	assert.Equal(t, string(rawData), response["body"])
+	assert.Equal(t, "application/json", response["contentType"])
+}
+
+func TestBodySelectionBytesRemovesReplacedBodyContentType(t *testing.T) {
+	server := startEchoServer()
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	resp, err := client.Post("/").
+		JSON(map[string]string{"source": "json"}).
+		Bytes([]byte("raw")).
+		Send(t.Context())
+	require.NoError(t, err)
+
+	var response map[string]string
+	require.NoError(t, resp.Decode(&response))
+	assert.Equal(t, "raw", response["body"])
+	assert.Empty(t, response["contentType"])
+}
+
+func TestBodySelectionBytesReplacesForm(t *testing.T) {
+	server := startEchoServer()
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	resp, err := client.Post("/").
+		Form(url.Values{"source": {"form"}}).
+		Bytes([]byte("raw")).
+		Send(t.Context())
+	require.NoError(t, err)
+
+	var response map[string]string
+	require.NoError(t, resp.Decode(&response))
+	assert.Equal(t, "raw", response["body"])
+	assert.Empty(t, response["contentType"])
+}
+
+func TestBodySelectionBytesPreservesExplicitContentType(t *testing.T) {
+	server := startEchoServer()
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	resp, err := client.Post("/").
+		JSON(map[string]string{"source": "json"}).
+		ContentType("application/custom").
+		Bytes([]byte("raw")).
+		Send(t.Context())
+	require.NoError(t, err)
+
+	var response map[string]string
+	require.NoError(t, resp.Decode(&response))
+	assert.Equal(t, "raw", response["body"])
+	assert.Equal(t, "application/custom", response["contentType"])
+}
+
+func TestReader(t *testing.T) {
+	server := startEchoServer()
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	readerData := "This is data from an io.Reader."
+
+	resp, err := client.Post("/").
+		Reader(strings.NewReader(readerData), "text/plain").
+		Send(context.Background())
+	assert.NoError(t, err)
+
+	var response map[string]string
+	err = resp.Decode(&response)
+	assert.NoError(t, err)
+
+	assert.Equal(t, readerData, response["body"])
+	assert.Equal(t, "text/plain", response["contentType"])
+}
+
+type countingReader struct {
+	reader io.Reader
+	reads  *atomic.Int64
+}
+
+type trackingSizedReadCloser struct {
+	*bytes.Reader
+	closed atomic.Bool
+}
+
+func (r *trackingSizedReadCloser) Close() error {
+	r.closed.Store(true)
+	return nil
+}
+
+func (r countingReader) Read(p []byte) (int, error) {
+	r.reads.Add(1)
+	return r.reader.Read(p)
+}
+
+func TestBodySelectionReaderReplacesMultipartWithoutReadingIt(t *testing.T) {
+	server := startEchoServer()
+	defer server.Close()
+
+	var replacedReads atomic.Int64
+	replaced := NewMultipart().File("upload", "old.txt", countingReader{
+		reader: strings.NewReader("old"),
+		reads:  &replacedReads,
+	})
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	resp, err := client.Post("/").
+		Multipart(replaced).
+		Reader(strings.NewReader("reader"), "text/plain").
+		Send(t.Context())
+	require.NoError(t, err)
+
+	var response map[string]string
+	require.NoError(t, resp.Decode(&response))
+	assert.Equal(t, "reader", response["body"])
+	assert.Equal(t, "text/plain", response["contentType"])
+	assert.Zero(t, replacedReads.Load())
+}
+
+func TestReaderOctetStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		assert.Equal(t, "application/octet-stream", r.Header.Get("Content-Type"))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	data := []byte{0x00, 0x01, 0x02, 0xFF}
+
+	resp, err := client.Post("/").
+		Reader(bytes.NewReader(data), "application/octet-stream").
+		Send(context.Background())
+	assert.NoError(t, err)
+
+	assert.Equal(t, data, resp.Bytes())
+}
+
+func TestReaderSourceClosesAtTransportBoundary(t *testing.T) {
+	source := &trackingSizedReadCloser{Reader: bytes.NewReader([]byte("payload"))}
+	var closedAtDispatch atomic.Bool
+	client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		closedAtDispatch.Store(source.closed.Load())
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		if err := req.Body.Close(); err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			Status:     "200 OK",
+			StatusCode: http.StatusOK,
+			Header:     http.Header{},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Request:    req,
+		}, nil
+	})))
+
+	resp, err := client.Post("https://example.com").Reader(source, "text/plain").Send(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, "payload", resp.String())
+	assert.False(t, closedAtDispatch.Load())
+	assert.True(t, source.closed.Load())
+}
+
+func TestReaderPreservesCurrentOffset(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(w, r.Body)
+	}))
+	defer server.Close()
+
+	source := bytes.NewReader([]byte("prefixpayload"))
+	_, err := source.Seek(int64(len("prefix")), io.SeekStart)
+	require.NoError(t, err)
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	resp, err := client.Post("/").Reader(source, "text/plain").Send(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, "payload", resp.String())
+}
+
+func TestBuiltInBodyGetBodyReturnsFreshReaders(t *testing.T) {
+	client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.GetBody == nil {
+			return nil, fmt.Errorf("missing GetBody")
+		}
+		first, err := req.GetBody()
+		if err != nil {
+			return nil, err
+		}
+		defer first.Close() //nolint:errcheck // test transport cleanup
+		second, err := req.GetBody()
+		if err != nil {
+			return nil, err
+		}
+		defer second.Close() //nolint:errcheck // test transport cleanup
+
+		prefix := make([]byte, 1)
+		if _, err := io.ReadFull(first, prefix); err != nil {
+			return nil, err
+		}
+		firstRest, err := io.ReadAll(first)
+		if err != nil {
+			return nil, err
+		}
+		secondBody, err := io.ReadAll(second)
+		if err != nil {
+			return nil, err
+		}
+		firstBody := make([]byte, 0, len(prefix)+len(firstRest))
+		firstBody = append(firstBody, prefix...)
+		firstBody = append(firstBody, firstRest...)
+		if !bytes.Equal(firstBody, secondBody) {
+			return nil, fmt.Errorf("GetBody readers are not independent")
+		}
+		_ = req.Body.Close()
+		return &http.Response{
+			Status:     "200 OK",
+			StatusCode: http.StatusOK,
+			Header:     http.Header{},
+			Body:       http.NoBody,
+			Request:    req,
+		}, nil
+	})))
+
+	resp, err := client.Post("https://example.com").JSON(map[string]string{"message": "hello"}).Send(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode())
+}
+
+func TestDefaultRetryOn408And429(t *testing.T) {
+	t.Run("408", func(t *testing.T) {
+		var requestCount int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			count := atomic.AddInt32(&requestCount, 1)
+			if count == 1 {
+				w.WriteHeader(http.StatusRequestTimeout)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client := newTestClient(t,
+			WithBaseURL(server.URL),
+			WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+		)
+		_, err := client.Get("/").Send(context.Background())
+		assert.NoError(t, err)
+		assert.Equal(t, int32(2), requestCount)
+	})
+
+	t.Run("429", func(t *testing.T) {
+		var requestCount int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			count := atomic.AddInt32(&requestCount, 1)
+			if count == 1 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client := newTestClient(t,
+			WithBaseURL(server.URL),
+			WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+		)
+		_, err := client.Get("/").Send(context.Background())
+		assert.NoError(t, err)
+		assert.Equal(t, int32(2), requestCount)
+	})
+}
+
+func TestRetryAfterHeader(t *testing.T) {
+	var requestCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(&requestCount, 1)
+		if count == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t,
+		WithBaseURL(server.URL),
+		WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(5 * time.Second)}),
+	)
+	_, err := client.Get("/").Send(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, int32(2), requestCount)
+}
+
+func TestRequestMaxRetriesZeroOverridesClientDefault(t *testing.T) {
+	var requestCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t,
+		WithBaseURL(server.URL),
+		WithRetry(RetryPolicy{Max: 2, Backoff: DefaultBackoffStrategy(0)}),
+	)
+	resp, err := client.Get("/").NoRetry().Send(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode())
+	assert.Equal(t, int32(1), requestCount)
+	assert.Equal(t, 1, resp.Attempts())
+}
+
+func TestRetryReplaysJSON(t *testing.T) {
+	var requestCount int32
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		bodies = append(bodies, string(body))
+
+		if atomic.AddInt32(&requestCount, 1) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t,
+		WithBaseURL(server.URL),
+		WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+	)
+	resp, err := client.Post("/").JSON(map[string]string{"message": "hello"}).Send(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode())
+	assert.Equal(t, int32(2), requestCount)
+	require.Len(t, bodies, 2)
+	assert.Equal(t, bodies[0], bodies[1])
+	assert.Equal(t, 2, resp.Attempts())
+}
+
+func TestRetryReplaysFormAndBytes(t *testing.T) {
+	tests := []struct {
+		name  string
+		build func(*Client) *RequestBuilder
+	}{
+		{
+			name: "form",
+			build: func(client *Client) *RequestBuilder {
+				return client.Post("/").Form(url.Values{"message": {"hello"}})
+			},
+		},
+		{
+			name: "bytes",
+			build: func(client *Client) *RequestBuilder {
+				return client.Post("/").Bytes([]byte("hello"))
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var bodies []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				require.NoError(t, err)
+				bodies = append(bodies, string(body))
+				if len(bodies) == 1 {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			client := newTestClient(t,
+				WithBaseURL(server.URL),
+				WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+			)
+			resp, err := test.build(client).Send(t.Context())
+
+			require.NoError(t, err)
+			assert.Equal(t, http.StatusOK, resp.StatusCode())
+			require.Len(t, bodies, 2)
+			assert.Equal(t, bodies[0], bodies[1])
+		})
+	}
+}
+
+func TestRetryRejectsNonReplayableBody(t *testing.T) {
+	var requestCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		atomic.AddInt32(&requestCount, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t,
+		WithBaseURL(server.URL),
+		WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+	)
+	body := &io.LimitedReader{R: strings.NewReader("payload"), N: int64(len("payload"))}
+	_, err := client.Post("/").Reader(body, "text/plain").Send(context.Background())
+	assert.ErrorIs(t, err, ErrRequestBodyNotReplayable)
+	assert.Equal(t, int32(1), requestCount)
+}
+
+func TestRetryRejectsNonReplayableJSONReader(t *testing.T) {
+	var requestCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		atomic.AddInt32(&requestCount, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t,
+		WithBaseURL(server.URL),
+		WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+	)
+	body := &io.LimitedReader{R: strings.NewReader(`{"message":"hello"}`), N: int64(len(`{"message":"hello"}`))}
+	_, err := client.Post("/").
+		Reader(body, "application/json").
+		Send(context.Background())
+	assert.ErrorIs(t, err, ErrRequestBodyNotReplayable)
+	assert.Equal(t, int32(1), requestCount)
+}
+
+func TestRetryPolicyControlsTransportErrors(t *testing.T) {
+	t.Run("false policy does not retry transport error", func(t *testing.T) {
+		var attempts int32
+		client := newTestClient(t,
+			WithHTTPClient(&http.Client{Transport: testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+				atomic.AddInt32(&attempts, 1)
+				return nil, assert.AnError
+			})}),
+			WithRetry(RetryPolicy{
+				Max:     2,
+				Backoff: DefaultBackoffStrategy(0),
+				ShouldRetry: func(*http.Request, *http.Response, error) bool {
+					return false
+				},
+			}),
+		)
+
+		_, err := client.Get("http://example.com").Send(t.Context())
+		require.Error(t, err)
+		assert.ErrorIs(t, err, assert.AnError)
+		assert.Equal(t, int32(1), attempts)
+	})
+
+	t.Run("true policy retries transport error", func(t *testing.T) {
+		var attempts int32
+		client := newTestClient(t,
+			WithHTTPClient(&http.Client{Transport: testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if atomic.AddInt32(&attempts, 1) == 1 {
+					return nil, assert.AnError
+				}
+				return &http.Response{
+					Status:     "200 OK",
+					StatusCode: http.StatusOK,
+					Header:     http.Header{},
+					Body:       io.NopCloser(strings.NewReader("ok")),
+					Request:    req,
+				}, nil
+			})}),
+			WithRetry(RetryPolicy{
+				Max:     2,
+				Backoff: DefaultBackoffStrategy(0),
+				ShouldRetry: func(_ *http.Request, _ *http.Response, err error) bool {
+					return err != nil
+				},
+			}),
+		)
+
+		resp, err := client.Get("http://example.com").Send(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode())
+		assert.Equal(t, int32(2), attempts)
+		assert.Equal(t, 2, resp.Attempts())
+	})
+}
+
+type trackingReadCloser struct {
+	reader    *strings.Reader
+	readBytes int64
+	closed    atomic.Bool
+}
+
+func newTrackingReadCloser(body string) *trackingReadCloser {
+	return &trackingReadCloser{reader: strings.NewReader(body)}
+}
+
+func (b *trackingReadCloser) Read(p []byte) (int, error) {
+	n, err := b.reader.Read(p)
+	atomic.AddInt64(&b.readBytes, int64(n))
+	return n, err
+}
+
+func (b *trackingReadCloser) Close() error {
+	b.closed.Store(true)
+	return nil
+}
+
+func TestRetryDrainsResponseBodyBeforeRetry(t *testing.T) {
+	retryBody := newTrackingReadCloser("retry body")
+	var attempts int32
+	client := newTestClient(t,
+		WithHTTPClient(&http.Client{Transport: testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if atomic.AddInt32(&attempts, 1) == 1 {
+				return &http.Response{
+					Status:     "500 Internal Server Error",
+					StatusCode: http.StatusInternalServerError,
+					Header:     http.Header{},
+					Body:       retryBody,
+					Request:    req,
+				}, nil
+			}
+			return &http.Response{
+				Status:     "200 OK",
+				StatusCode: http.StatusOK,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader("ok")),
+				Request:    req,
+			}, nil
+		})}),
+		WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+	)
+
+	resp, err := client.Get("http://example.com").Send(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode())
+	assert.Equal(t, "ok", resp.String())
+	assert.Equal(t, int32(2), attempts)
+	assert.Equal(t, int64(len("retry body")), atomic.LoadInt64(&retryBody.readBytes))
+	assert.True(t, retryBody.closed.Load())
+}
+
+func TestRetryDrainsResponseBodyWithLimit(t *testing.T) {
+	retryBody := newTrackingReadCloser(strings.Repeat("x", maxRetryDrainBytes+1))
+	var attempts int32
+	client := newTestClient(t,
+		WithHTTPClient(&http.Client{Transport: testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if atomic.AddInt32(&attempts, 1) == 1 {
+				return &http.Response{
+					Status:     "500 Internal Server Error",
+					StatusCode: http.StatusInternalServerError,
+					Header:     http.Header{},
+					Body:       retryBody,
+					Request:    req,
+				}, nil
+			}
+			return &http.Response{
+				Status:     "200 OK",
+				StatusCode: http.StatusOK,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader("ok")),
+				Request:    req,
+			}, nil
+		})}),
+		WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+	)
+
+	resp, err := client.Get("http://example.com").Send(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode())
+	assert.Equal(t, int64(maxRetryDrainBytes), atomic.LoadInt64(&retryBody.readBytes))
+	assert.True(t, retryBody.closed.Load())
+}
+
+func TestRequestLevelRetries(t *testing.T) {
+	var requestCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt32(&requestCount, 1)
+		if count == 1 {
+			// Simulate a server error on the first request
+			w.WriteHeader(http.StatusInternalServerError)
+		} else {
+			// Succeed on subsequent attempts
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintln(w, "Success")
+		}
+	}))
+
+	defer server.Close()
+
+	// Set up a request builder with retry configuration
+	client := newTestClient(t, WithBaseURL(server.URL))
+	rq := client.Get("/")
+	rq.Retry(RetryPolicy{
+		Max:     2,
+		Backoff: func(attempt int) time.Duration { return 10 * time.Millisecond },
+		ShouldRetry: func(req *http.Request, resp *http.Response, err error) bool {
+			return resp.StatusCode == http.StatusInternalServerError
+		},
+	})
+
+	// Send the request
+	_, err := rq.Send(context.Background())
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+
+	// Verify that the retry logic was applied
+	expectedAttempts := int32(2)
+	if requestCount != expectedAttempts {
+		t.Errorf("Expected %d attempts, got %d", expectedAttempts, requestCount)
+	}
+}
+
+func TestFormWithNil(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Ensure a valid JSON response is sent back for all scenarios
+		response := map[string]any{
+			"status": "received",
+			"body":   "empty or nil form",
+		}
+		if err := json.MarshalWrite(w, response); err != nil {
+			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+
+	resp, err := client.Post("/").Form(nil).Send(context.Background())
+	assert.NoError(t, err, "No error expected on sending request with nil form")
+
+	var response map[string]any
+	err = resp.DecodeJSON(&response)
+	assert.NoError(t, err, "Expect no error on parsing response")
+
+	// Assert form is correctly received
+	assert.Contains(t, response, "status", "Status should be present")
+	assert.Contains(t, response, "body", "Body should be present")
+}
+
+// TestAuthRequest verifies that the Auth method correctly applies basic authentication to a request.
+func TestAuthRequest(t *testing.T) {
+	// Expected username and password for basic authentication.
+	expectedUsername := "testuser"
+	expectedPassword := "testpass"
+
+	// Encode the username and password into the expected format for the Authorization header.
+	expectedAuthValue := "Basic " + base64.StdEncoding.EncodeToString([]byte(expectedUsername+":"+expectedPassword))
+
+	// Set up a mock server to handle the request. This server checks the Authorization header.
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Retrieve the Authorization header from the incoming request.
+		authHeader := r.Header.Get("Authorization")
+
+		// Compare the Authorization header to the expected value.
+		if authHeader != expectedAuthValue {
+			// If they don't match, respond with 401 Unauthorized to indicate a failed authentication attempt.
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+		// If the Authorization header is correct, respond with 200 OK to indicate successful authentication.
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mockServer.Close() // Ensure the server is shut down at the end of the test.
+
+	// Initialize the HTTP client with the base URL set to the mock server's URL.
+	client := newTestClient(t, WithBaseURL(mockServer.URL))
+
+	// Create a request to the mock server with basic authentication credentials.
+	resp, err := client.Get("/").Auth(BasicAuth{
+		Username: expectedUsername,
+		Password: expectedPassword,
+	}).Send(context.Background())
+
+	if err != nil {
+		// If there's an error sending the request, fail the test.
+		t.Fatalf("Failed to send request: %v", err)
+	}
+	defer resp.Close() //nolint:errcheck // test cleanup closes response body
+
+	// Check if the response status code is 200 OK, which indicates successful authentication.
+	if resp.StatusCode() != http.StatusOK {
+		// If the status code is not 200, it indicates the Authorization header was not set correctly.
+		t.Errorf("Expected status code 200, got %d. Indicates Authorization header was not set correctly.", resp.StatusCode())
+	}
+}
+
+// TestDelCookie_SingleCookie tests deleting a single cookie
+func TestDelCookie_SingleCookie(t *testing.T) {
+	builder := &RequestBuilder{
+		cookies: []*http.Cookie{
+			{Name: "sessionid", Value: "abc123"},
+			{Name: "userid", Value: "user456"},
+			{Name: "theme", Value: "dark"},
+		},
+	}
+
+	builder.DelCookie("userid")
+
+	// Should have 2 cookies remaining
+	assert.Len(t, builder.cookies, 2)
+
+	// Verify the correct cookies remain
+	cookieNames := make([]string, len(builder.cookies))
+	for i, cookie := range builder.cookies {
+		cookieNames[i] = cookie.Name
+	}
+
+	assert.Contains(t, cookieNames, "sessionid")
+	assert.Contains(t, cookieNames, "theme")
+	assert.NotContains(t, cookieNames, "userid")
+}
+
+// TestDelCookie_MultipleCookies tests deleting multiple cookies at once
+func TestDelCookie_MultipleCookies(t *testing.T) {
+	builder := &RequestBuilder{
+		cookies: []*http.Cookie{
+			{Name: "A", Value: "1"},
+			{Name: "B", Value: "2"},
+			{Name: "C", Value: "3"},
+			{Name: "D", Value: "4"},
+			{Name: "E", Value: "5"},
+		},
+	}
+
+	// Delete multiple cookies including consecutive ones
+	builder.DelCookie("B", "C", "E")
+
+	// Should have 2 cookies remaining
+	assert.Len(t, builder.cookies, 2)
+
+	// Verify the correct cookies remain
+	assert.Equal(t, "A", builder.cookies[0].Name)
+	assert.Equal(t, "D", builder.cookies[1].Name)
+}
+
+// TestDelCookie_ConsecutiveCookies specifically tests the bug case
+func TestDelCookie_ConsecutiveCookies(t *testing.T) {
+	builder := &RequestBuilder{
+		cookies: []*http.Cookie{
+			{Name: "keep1", Value: "1"},
+			{Name: "delete1", Value: "2"},
+			{Name: "delete2", Value: "3"},
+			{Name: "delete3", Value: "4"},
+			{Name: "keep2", Value: "5"},
+		},
+	}
+
+	// This would fail with the old buggy implementation
+	builder.DelCookie("delete1", "delete2", "delete3")
+
+	// Should have 2 cookies remaining
+	assert.Len(t, builder.cookies, 2)
+
+	// Verify the correct cookies remain
+	assert.Equal(t, "keep1", builder.cookies[0].Name)
+	assert.Equal(t, "keep2", builder.cookies[1].Name)
+}
+
+// TestDelCookie_NonExistentCookie tests deleting non-existent cookies
+func TestDelCookie_NonExistentCookie(t *testing.T) {
+	builder := &RequestBuilder{
+		cookies: []*http.Cookie{
+			{Name: "existing", Value: "value"},
+		},
+	}
+
+	builder.DelCookie("nonexistent")
+
+	// Should still have the original cookie
+	assert.Len(t, builder.cookies, 1)
+	assert.Equal(t, "existing", builder.cookies[0].Name)
+}
+
+// TestDelCookie_DuplicateKeys tests deleting with duplicate keys
+func TestDelCookie_DuplicateKeys(t *testing.T) {
+	builder := &RequestBuilder{
+		cookies: []*http.Cookie{
+			{Name: "keep1", Value: "1"},
+			{Name: "delete", Value: "2"},
+			{Name: "keep2", Value: "3"},
+		},
+	}
+
+	builder.DelCookie("delete", "delete")
+
+	assert.Len(t, builder.cookies, 2)
+	assert.Equal(t, "keep1", builder.cookies[0].Name)
+	assert.Equal(t, "keep2", builder.cookies[1].Name)
+}
+
+// TestDelCookie_EmptyCookies tests deleting from empty cookie slice
+func TestDelCookie_EmptyCookies(t *testing.T) {
+	builder := &RequestBuilder{}
+
+	// Should not panic
+	builder.DelCookie("any")
+
+	// Should remain nil
+	assert.Nil(t, builder.cookies)
+}

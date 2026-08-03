@@ -1,0 +1,104 @@
+package requests
+
+import (
+	"net/http"
+	"slices"
+)
+
+// AsHTTPClient returns a net/http client that applies this client's defaults.
+//
+// The returned client preserves the underlying timeout, cookie jar, redirect
+// policy, and transport at the time AsHTTPClient is called. Its transport applies
+// client headers, cookies, auth, and client-level middleware. RequestBuilder-only
+// behavior such as retries, response buffering, streaming callbacks, and decoding
+// helpers is not part of the returned client.
+func (c *Client) AsHTTPClient() *http.Client {
+	snap := c.snapshot()
+	source := snap.httpClient
+
+	client := &http.Client{
+		Transport: newClientDefaultsTransport(&snap),
+	}
+	if source == nil {
+		return client
+	}
+
+	client.Timeout = source.Timeout
+	client.Jar = source.Jar
+	client.CheckRedirect = source.CheckRedirect
+	return client
+}
+
+// AsTransport returns a RoundTripper that applies this client's defaults.
+//
+// Use it when another library owns the *http.Client and only lets callers
+// replace http.Client.Transport. The returned transport snapshots client
+// headers, cookies, auth, middleware, and the underlying transport at call time.
+func (c *Client) AsTransport() http.RoundTripper {
+	snap := c.snapshot()
+	return newClientDefaultsTransport(&snap)
+}
+
+type clientDefaultsTransport struct {
+	snap *clientSnapshot
+	base http.RoundTripper
+}
+
+func newClientDefaultsTransport(snap *clientSnapshot) http.RoundTripper {
+	base := http.DefaultTransport
+	if snap.httpClient != nil && snap.httpClient.Transport != nil {
+		base = snap.httpClient.Transport
+	}
+
+	return &clientDefaultsTransport{
+		snap: snap,
+		base: base,
+	}
+}
+
+func (t *clientDefaultsTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	cloned := cloneWithClientDefaults(req, t.snap)
+
+	handler := MiddlewareHandlerFunc(func(req *http.Request) (*http.Response, error) {
+		return t.base.RoundTrip(req)
+	})
+	for _, mw := range slices.Backward(t.snap.middlewares) {
+		handler = mw(handler)
+	}
+
+	return handler(cloned)
+}
+
+func cloneWithClientDefaults(req *http.Request, snap *clientSnapshot) *http.Request {
+	cloned := req.Clone(req.Context())
+	original := req.Header.Clone()
+
+	cloned.Header = http.Header{}
+	addHeaderValues(cloned.Header, snap.headers, snap.orderedHeaders)
+	for _, cookie := range snap.cookies {
+		if cookie != nil {
+			cloned.AddCookie(cookie)
+		}
+	}
+	if snap.auth != nil {
+		snap.auth.Apply(cloned)
+	}
+	clientCookies := cloned.Cookies()
+	for key, values := range original {
+		deleteHeaderValues(cloned.Header, key)
+		for _, value := range values {
+			cloned.Header.Add(key, value)
+		}
+	}
+	applyCookiePrecedence(cloned, clientCookies, req.Cookies())
+
+	ordered := cloneOrderedHeaders(snap.orderedHeaders)
+	for key := range original {
+		deleteOrderedHeader(ordered, key)
+	}
+	syncOrderedHeaderValues(ordered, cloned.Header)
+	if ordered != nil && ordered.Len() == 0 {
+		ordered = nil
+	}
+	return withOrderedHeaders(cloned, ordered)
+}
