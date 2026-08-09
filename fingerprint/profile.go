@@ -50,6 +50,9 @@ func Custom(name string, helloID utls.ClientHelloID, opts ...Option) requests.Pr
 		helloID: helloID,
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
 		opt(&p)
 	}
 	if p.name == "" {

@@ -29,6 +29,8 @@ Across layers, client middleware wraps request middleware. The effective stack i
 2. request middleware
 3. final HTTP execution handler
 
+If middleware returns without calling the next handler, the transport never owns the prepared request body. `requests` closes that undelivered body after the middleware chain returns, including response, error, and nil-response short circuits.
+
 > **Why**: Client middleware expresses cross-cutting policy for all requests, while request middleware expresses one-shot behavior closer to the transport attempt.
 >
 > **Rejected**: A single undifferentiated middleware list shared by all requests.

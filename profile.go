@@ -9,8 +9,8 @@ type Profile interface {
 }
 
 func applyProfileOptions(c *Client, profile Profile) error {
-	if profile == nil {
-		return fmt.Errorf("%w: profile", ErrInvalidConfigValue)
+	if isNilInterface(profile) {
+		return invalidOptionValue("Profile")
 	}
 	for _, opt := range profile.Options() {
 		if opt == nil {

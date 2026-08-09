@@ -162,6 +162,35 @@ func TestFirefoxProfileName(t *testing.T) {
 	require.Equal(t, "Firefox", profile.Name())
 }
 
+func TestProfilesIgnoreNilOption(t *testing.T) {
+	tests := []struct {
+		name    string
+		profile requests.Profile
+	}{
+		{name: "Chrome", profile: Chrome(nil)},
+		{name: "Firefox", profile: Firefox(nil)},
+		{name: "Custom", profile: Custom("Custom", utls.HelloChrome_Auto, nil)},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client, err := requests.New(requests.WithProfile(test.profile))
+
+			require.NoError(t, err)
+			require.NotNil(t, client)
+		})
+	}
+
+	client, err := requests.New(requests.WithProfile(Chrome(
+		nil,
+		WithTLSConfig(&tls.Config{ServerName: "example.com"}),
+	)))
+	require.NoError(t, err)
+	transport, ok := client.UnsafeHTTPClient().Transport.(*http.Transport)
+	require.True(t, ok)
+	require.Equal(t, "example.com", transport.TLSClientConfig.ServerName)
+}
+
 func TestCustomProfileNameDefaultsToHelloID(t *testing.T) {
 	profile := Custom("", utls.HelloChrome_Auto)
 

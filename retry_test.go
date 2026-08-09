@@ -2,8 +2,10 @@ package requests
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -48,6 +50,13 @@ func TestDefaultRetryIfClassifiesTransportErrors(t *testing.T) {
 		{name: "deadline exceeded", err: context.DeadlineExceeded, want: true},
 		{name: "net timeout", err: retryTimeoutError{}, want: true},
 		{name: "connection error", err: &net.OpError{Op: "dial", Net: "tcp", Err: assert.AnError}, want: true},
+		{
+			name: "caller cancellation joined with connection error",
+			err: errors.Join(
+				context.Canceled,
+				&net.OpError{Op: "dial", Net: "tcp", Err: assert.AnError},
+			),
+		},
 	}
 
 	for _, tt := range tests {
@@ -55,6 +64,28 @@ func TestDefaultRetryIfClassifiesTransportErrors(t *testing.T) {
 			assert.Equal(t, tt.want, DefaultRetryIf(nil, nil, tt.err))
 		})
 	}
+}
+
+func TestDefaultRetryCancellationStopsDelivery(t *testing.T) {
+	joinedErr := errors.Join(
+		context.Canceled,
+		&net.OpError{Op: "dial", Net: "tcp", Err: assert.AnError},
+	)
+	var attempts atomic.Int32
+	client := newTestClient(t,
+		WithHTTPClient(&http.Client{Transport: testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+			attempts.Add(1)
+			return nil, joinedErr
+		})}),
+		WithRetry(RetryPolicy{Max: 3, Backoff: DefaultBackoffStrategy(0)}),
+	)
+
+	resp, err := client.Get("https://example.com").Send(t.Context())
+
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.True(t, IsCanceled(err))
+	assert.Equal(t, int32(1), attempts.Load())
 }
 
 func TestDefaultRetryIfClassifiesResponses(t *testing.T) {

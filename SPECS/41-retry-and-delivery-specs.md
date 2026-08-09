@@ -45,6 +45,9 @@ malformed request construction, invalid headers, redirect policy failures, or
 other deterministic caller/configuration errors. Error joins from exhausted
 attempts preserve `errors.Is` / `errors.As` traversal and therefore preserve the
 same helper classifications.
+Within the default retry decision, caller cancellation takes precedence over
+other joined classifications, so an error that contains both
+`context.Canceled` and a retryable transport cause is not retried.
 
 ## Backoff Strategies
 
@@ -73,7 +76,8 @@ Invalid or negative `Retry-After` values fall back to the configured strategy.
 The retry loop respects the request context.
 
 - If the context is canceled or reaches its deadline during backoff, delivery stops and returns `ctx.Err()`.
-- Before sleeping for a retry, any received response body is drained up to an internal cap and closed.
+- Before sleeping for a retry, any successfully returned response body owned by the retry loop is drained up to an internal cap and closed.
+- If draining or closing that retry response fails, delivery stops before another transport attempt and returns an error preserving every cleanup cause.
 - When proxy rotation is configured through `WithProxies` or a proxy selector, proxy choice is evaluated per transport attempt, so retries may use different proxies.
 
 Callers classify the failure with the package helpers: `IsCanceled` matches `context.Canceled` only, and `IsTimeout` matches `context.DeadlineExceeded` and `net.Error` timeouts. The two are orthogonal so caller-driven cancellation is distinguishable from a deadline hit.

@@ -18,6 +18,7 @@ Streaming is an explicit dispatch mode. `RequestBuilder.SendStream(ctx)` returns
 - `Close() error`
 
 The caller MUST close `StreamResponse`. Closing the stream response closes the response body and releases any request context derived from builder timeout.
+The derived request context is released before the body is closed, so a body whose cleanup waits for request cancellation can finish. Repeated calls are idempotent and return the first body-close error.
 
 `Elapsed()` returns the duration from request dispatch through stream response setup. `Attempts()` returns transport attempts for the stream response, including the first request.
 

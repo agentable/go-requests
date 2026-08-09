@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/test-go/testify/require"
 )
 
 // createTestServerForProxy creates a simple HTTP server for testing purposes.
@@ -37,12 +38,25 @@ func TestWithProxyValidProxy(t *testing.T) {
 
 // TestWithProxyInvalidProxy tests handling of invalid proxy URLs.
 func TestWithProxyInvalidProxy(t *testing.T) {
-	server := createTestServerForProxy()
-	defer server.Close()
+	t.Run("malformed URL does not disclose credentials", func(t *testing.T) {
+		client, err := New(WithProxy("http://alice:secret@%zz"))
 
-	invalidProxyURL := "://invalid_url"
-	_, err := New(WithBaseURL(server.URL), WithProxy(invalidProxyURL))
-	assert.NotNil(t, err, "Setting an invalid proxy URL should result in an error.")
+		require.Error(t, err)
+		assert.Nil(t, client)
+		assert.ErrorIs(t, err, ErrInvalidConfigValue)
+		assert.NotContains(t, err.Error(), "alice")
+		assert.NotContains(t, err.Error(), "secret")
+	})
+
+	for _, proxyURL := range []string{"http:", "http:///path"} {
+		t.Run("empty host "+proxyURL, func(t *testing.T) {
+			client, err := New(WithProxy(proxyURL))
+
+			require.Error(t, err)
+			assert.Nil(t, client)
+			assert.ErrorIs(t, err, ErrInvalidConfigValue)
+		})
+	}
 }
 
 func TestWithoutProxyClearsProxyOnClone(t *testing.T) {

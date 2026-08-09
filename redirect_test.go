@@ -17,6 +17,12 @@ import (
 
 type limitedJSONEncoder struct{}
 
+type allowAllRedirects struct{}
+
+func (allowAllRedirects) Apply(_ *http.Request, _ []*http.Request) error {
+	return nil
+}
+
 func (limitedJSONEncoder) Encode(any) (io.Reader, error) {
 	payload := `{"message":"hello"}`
 	return &io.LimitedReader{R: strings.NewReader(payload), N: int64(len(payload))}, nil
@@ -369,10 +375,11 @@ func TestRedirectPolicyRejectsDifferentExampleHost(t *testing.T) {
 	assert.ErrorIs(t, err, ErrRedirectNotAllowed)
 }
 
-func TestRedirectCredentialPolicyStripsCredentialsAcrossPorts(t *testing.T) {
+func TestRedirectClientStripsCredentialsAcrossOrigins(t *testing.T) {
 	type receivedHeaders struct {
 		authorization      string
 		proxyAuthorization string
+		cookie             string
 		trace              string
 	}
 
@@ -381,6 +388,7 @@ func TestRedirectCredentialPolicyStripsCredentialsAcrossPorts(t *testing.T) {
 		received <- receivedHeaders{
 			authorization:      r.Header.Get("Authorization"),
 			proxyAuthorization: r.Header.Get("Proxy-Authorization"),
+			cookie:             r.Header.Get("Cookie"),
 			trace:              r.Header.Get("X-Trace"),
 		}
 		w.WriteHeader(http.StatusOK)
@@ -392,10 +400,11 @@ func TestRedirectCredentialPolicyStripsCredentialsAcrossPorts(t *testing.T) {
 	}))
 	defer source.Close()
 
-	client := newTestClient(t, WithRedirectPolicy(NewAllowRedirectPolicy(5)))
+	client := newTestClient(t, WithRedirectPolicy(allowAllRedirects{}))
 	resp, err := client.Get(source.URL).
 		Header("Authorization", "Bearer secret").
 		Header("Proxy-Authorization", "Basic c2VjcmV0").
+		Header("Cookie", "manual=source").
 		Header("X-Trace", "trace").
 		Send(t.Context())
 	require.NoError(t, err)
@@ -404,7 +413,29 @@ func TestRedirectCredentialPolicyStripsCredentialsAcrossPorts(t *testing.T) {
 	got := <-received
 	assert.Empty(t, got.authorization)
 	assert.Empty(t, got.proxyAuthorization)
+	assert.Empty(t, got.cookie)
 	assert.Equal(t, "trace", got.trace)
+}
+
+func TestAllowRedirectPolicyStripsCredentialsAcrossOrigins(t *testing.T) {
+	req := &http.Request{
+		URL: &url.URL{Scheme: "https", Host: "destination.example", Path: "/final"},
+		Header: http.Header{
+			"Authorization":       []string{"Bearer secret"},
+			"Proxy-Authorization": []string{"Basic c2VjcmV0"},
+			"Cookie":              []string{"manual=source"},
+			"X-Trace":             []string{"trace"},
+		},
+	}
+	via := []*http.Request{{
+		URL: &url.URL{Scheme: "https", Host: "source.example", Path: "/start"},
+	}}
+
+	require.NoError(t, NewAllowRedirectPolicy(5).Apply(req, via))
+	assert.Empty(t, req.Header.Get("Authorization"))
+	assert.Empty(t, req.Header.Get("Proxy-Authorization"))
+	assert.Empty(t, req.Header.Get("Cookie"))
+	assert.Equal(t, "trace", req.Header.Get("X-Trace"))
 }
 
 func headersAfterRedirect(t *testing.T, sourceURL, destinationURL string) http.Header {

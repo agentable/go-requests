@@ -660,6 +660,7 @@ func (c *Client) setRedirectPolicy(policies ...RedirectPolicy) *Client {
 				return err
 			}
 		}
+		stripSensitiveHeadersOnRedirect(req, via[0])
 		return nil
 	}
 	return c

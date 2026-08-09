@@ -2,16 +2,35 @@ package requests
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/test-go/testify/require"
 )
+
+type contextBoundCloseBody struct {
+	done     <-chan struct{}
+	closeErr error
+	closes   int
+}
+
+func (*contextBoundCloseBody) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (b *contextBoundCloseBody) Close() error {
+	b.closes++
+	<-b.done
+	return b.closeErr
+}
 
 func TestStream(t *testing.T) {
 	t.Parallel()
@@ -95,6 +114,33 @@ func TestStreamResponseCloseReleasesTimeoutContext(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("stream close did not release request context")
 	}
+}
+
+func TestStreamResponseCloseCancelsBeforeClosingBody(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		closeErr := errors.New("close failed")
+		body := &contextBoundCloseBody{done: ctx.Done(), closeErr: closeErr}
+		resp := newStreamResponse(&http.Response{Body: body}, cancel)
+		closeDone := make(chan error, 1)
+
+		go func() {
+			closeDone <- resp.Close()
+		}()
+		synctest.Wait()
+
+		select {
+		case err := <-closeDone:
+			assert.ErrorIs(t, err, closeErr)
+		default:
+			cancel()
+			<-closeDone
+			t.Fatal("StreamResponse.Close blocked before canceling its request context")
+		}
+
+		assert.ErrorIs(t, resp.Close(), closeErr)
+		assert.Equal(t, 1, body.closes)
+	})
 }
 
 func TestStreamResponseLinesReportsScannerError(t *testing.T) {

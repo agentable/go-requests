@@ -93,11 +93,11 @@ func (r *StreamResponse) Lines() iter.Seq2[[]byte, error] {
 // Close closes the response body and releases the request context.
 func (r *StreamResponse) Close() error {
 	r.closeOnce.Do(func() {
-		if r.rawResponse != nil && r.rawResponse.Body != nil {
-			r.closeErr = r.rawResponse.Body.Close()
-		}
 		if r.cancel != nil {
 			r.cancel()
+		}
+		if r.rawResponse != nil && r.rawResponse.Body != nil {
+			r.closeErr = r.rawResponse.Body.Close()
 		}
 	})
 	return r.closeErr

@@ -1,6 +1,7 @@
 package requests
 
 import (
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net"
@@ -92,11 +93,18 @@ func (np *noProxy) matches(host string) bool {
 func verifyProxy(proxyURL string) (*url.URL, error) {
 	parsedURL, err := url.Parse(proxyURL)
 	if err != nil {
-		return nil, err
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) && urlErr.Err != nil {
+			err = urlErr.Err
+		}
+		return nil, fmt.Errorf("%w: proxy URL: %w", ErrInvalidConfigValue, err)
 	}
 
 	switch parsedURL.Scheme {
 	case "http", "https", "socks5":
+		if parsedURL.Hostname() == "" {
+			return nil, fmt.Errorf("%w: proxy URL host", ErrInvalidConfigValue)
+		}
 		return parsedURL, nil
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedScheme, parsedURL.Scheme)

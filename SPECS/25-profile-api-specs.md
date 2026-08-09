@@ -18,6 +18,7 @@ type Profile interface {
 ```
 
 `WithProfile(profile)` applies the returned options in order during `New` or `Clone`. If a profile option fails, construction fails with profile context.
+A nil or typed-nil profile is invalid and returns `ErrInvalidConfigValue` instead of panicking. Nil entries in extension profile option lists are ignored, matching root functional-option composition.
 
 A profile that installs a transport is an explicit whole-transport replacement. Earlier settings that the new transport can consume, such as TLS/session intent, are preserved by that profile. Transport-specific settings it cannot represent, such as TCP dial or HTTP proxy settings on HTTP/3, are replaced. Later incompatible root transport options fail construction instead of silently replacing the profile transport.
 

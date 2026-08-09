@@ -61,6 +61,18 @@ func TestProfileAppliesHTTP3Transport(t *testing.T) {
 	require.True(t, ok)
 }
 
+func TestOptionsIgnoreNil(t *testing.T) {
+	client, err := requests.New(requests.WithProfile(Profile(nil, WithDatagrams())))
+	require.NoError(t, err)
+	profileTransport, ok := client.UnsafeHTTPClient().Transport.(*qhttp3.Transport)
+	require.True(t, ok)
+	require.True(t, profileTransport.EnableDatagrams)
+
+	transport := Transport(nil, WithDatagrams())
+	require.NotNil(t, transport)
+	require.True(t, transport.EnableDatagrams)
+}
+
 func TestProfileUsesClientTLSConfig(t *testing.T) {
 	tlsConfig := &tls.Config{ServerName: "example.com", MinVersion: tls.VersionTLS13}
 	client, err := requests.New(

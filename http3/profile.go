@@ -110,6 +110,9 @@ func Transport(opts ...Option) *qhttp3.Transport {
 func newSettings(opts ...Option) settings {
 	var s settings
 	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
 		opt(&s)
 	}
 	return s

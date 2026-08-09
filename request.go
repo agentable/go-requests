@@ -635,8 +635,10 @@ func (b *RequestBuilder) do(ctx context.Context, req *http.Request, snap *client
 				return resp, ErrRequestBodyNotReplayable
 			}
 
-			if resp != nil {
-				drainAndCloseBody(resp.Body, snap.logger)
+			if resp != nil && err == nil {
+				if err := drainAndCloseBody(resp.Body); err != nil {
+					return nil, fmt.Errorf("cleaning retry response body: %w", err)
+				}
 			}
 
 			if snap.logger != nil {
@@ -667,21 +669,20 @@ func (b *RequestBuilder) do(ctx context.Context, req *http.Request, snap *client
 	}
 
 	resp, err := finalHandler(req)
+	if attempts == 0 && req.Body != nil {
+		_ = req.Body.Close() // Match net/http ownership when middleware skips transport delivery.
+	}
 	return resp, attempts, err
 }
 
 const maxRetryDrainBytes = 64 << 10
 
-func drainAndCloseBody(body io.ReadCloser, logger Logger) {
+func drainAndCloseBody(body io.ReadCloser) error {
 	if body == nil {
-		return
+		return nil
 	}
-	if _, err := io.Copy(io.Discard, io.LimitReader(body, maxRetryDrainBytes)); err != nil && logger != nil {
-		logger.Errorf("Error draining response body: %v", err)
-	}
-	if err := body.Close(); err != nil && logger != nil {
-		logger.Errorf("Error closing response body: %v", err)
-	}
+	_, drainErr := io.Copy(io.Discard, io.LimitReader(body, maxRetryDrainBytes))
+	return errors.Join(drainErr, body.Close())
 }
 
 // Send executes the HTTP request.

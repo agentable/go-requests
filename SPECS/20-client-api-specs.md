@@ -123,6 +123,7 @@ Proxy configuration belongs on `Client`:
 - With no explicit proxy option, the nil/default transport follows `http.ProxyFromEnvironment`. `WithoutProxy` materializes a standard transport with `Proxy == nil` for explicit direct delivery.
 - `WithProxies` and selector-based proxy functions apply per transport attempt, including retry attempts.
 - Explicit proxy URLs accept only `http`, `https`, and `socks5` schemes.
+- Explicit proxy URLs require a host. Malformed proxy diagnostics classify as `ErrInvalidConfigValue` without exposing URL userinfo.
 
 ## Redirect Policy
 

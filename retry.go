@@ -98,6 +98,9 @@ func (p RetryPolicy) delay(attempt int, resp *http.Response) time.Duration {
 // verification failures are not retried by default.
 func DefaultRetryIf(req *http.Request, resp *http.Response, err error) bool {
 	if err != nil {
+		if IsCanceled(err) {
+			return false
+		}
 		return IsTimeout(err) || IsConnectionError(err)
 	}
 	if resp == nil {

@@ -46,11 +46,24 @@ func TestWithProfileReturnsOptionError(t *testing.T) {
 }
 
 func TestWithProfileRejectsNilProfile(t *testing.T) {
-	client, err := New(WithProfile(nil))
+	var typedNil *testProfile
+	tests := []struct {
+		name    string
+		profile Profile
+	}{
+		{name: "nil", profile: nil},
+		{name: "typed nil", profile: typedNil},
+	}
 
-	require.Error(t, err)
-	assert.Nil(t, client)
-	assert.ErrorIs(t, err, ErrInvalidConfigValue)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client, err := New(WithProfile(test.profile))
+
+			require.Error(t, err)
+			assert.Nil(t, client)
+			assert.ErrorIs(t, err, ErrInvalidConfigValue)
+		})
+	}
 }
 
 func TestEnableHTTP2(t *testing.T) {

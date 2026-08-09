@@ -334,6 +334,9 @@ resp, err := client.Get("/jobs/{id}").
 Use `NoRetry()` on a request to disable a positive client default. Replayable request bodies are restored before retry attempts; non-replayable streaming bodies are attempted once.
 
 The retry logic automatically honors `Retry-After` on `429` and `503` responses.
+Before a retry, a successfully returned prior response body owned by the retry
+loop is drained within an internal cap and closed. A drain or close failure
+stops delivery and remains inspectable through the returned error chain.
 
 ## `net/http` Integration
 
@@ -413,7 +416,8 @@ if err != nil {
 }
 ```
 
-Proxy URLs support `http`, `https`, and `socks5` schemes.
+Proxy URLs support `http`, `https`, and `socks5` schemes and require a host.
+Malformed proxy errors do not expose URL userinfo.
 Without an explicit proxy option, delivery follows `net/http` and its environment proxy rules. Use `WithoutProxy()` when the client must connect directly regardless of `HTTP_PROXY`, `HTTPS_PROXY`, or `NO_PROXY`.
 
 ### Redirect policies
@@ -549,6 +553,10 @@ if err != nil {
 	log.Fatal(err)
 }
 ```
+
+Middleware may return without calling the next handler. In that case no
+transport owns the prepared request body, so `requests` closes it when the
+middleware chain returns.
 
 ## Logging
 

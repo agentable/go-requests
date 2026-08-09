@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -34,6 +35,94 @@ func TestRequestNilResponseError(t *testing.T) {
 
 	_, err := client.Get("/").Send(context.Background())
 	assert.ErrorIs(t, err, ErrResponseNil)
+}
+
+type closeSignalBody struct {
+	io.ReadCloser
+	closed chan<- struct{}
+}
+
+func (b *closeSignalBody) Close() error {
+	err := b.ReadCloser.Close()
+	select {
+	case b.closed <- struct{}{}:
+	default:
+	}
+	return err
+}
+
+func TestMiddlewareShortCircuitClosesStreamingMultipartBody(t *testing.T) {
+	middlewareErr := errors.New("middleware stopped delivery")
+	tests := []struct {
+		name    string
+		result  func(*http.Request) (*http.Response, error)
+		wantErr error
+	}{
+		{
+			name: "response",
+			result: func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					Status:     "204 No Content",
+					StatusCode: http.StatusNoContent,
+					Header:     http.Header{},
+					Body:       http.NoBody,
+					Request:    req,
+				}, nil
+			},
+		},
+		{
+			name: "error",
+			result: func(*http.Request) (*http.Response, error) {
+				return nil, middlewareErr
+			},
+			wantErr: middlewareErr,
+		},
+		{
+			name: "nil response",
+			result: func(*http.Request) (*http.Response, error) {
+				return nil, nil
+			},
+			wantErr: ErrResponseNil,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				bodyClosed := make(chan struct{}, 1)
+				var capturedBody io.ReadCloser
+				client := newTestClient(t)
+				client.addMiddleware(func(MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+					return func(req *http.Request) (*http.Response, error) {
+						capturedBody = &closeSignalBody{ReadCloser: req.Body, closed: bodyClosed}
+						req.Body = capturedBody
+						return test.result(req)
+					}
+				})
+
+				resp, err := client.Post("https://example.com").
+					Multipart(NewMultipart().FileString("upload", "payload.txt", "payload")).
+					Send(t.Context())
+				if test.wantErr == nil {
+					require.NoError(t, err)
+					assert.Equal(t, 0, resp.Attempts())
+					require.NoError(t, resp.Close())
+				} else {
+					assert.Nil(t, resp)
+					assert.ErrorIs(t, err, test.wantErr)
+				}
+
+				select {
+				case <-bodyClosed:
+				default:
+					_ = capturedBody.Close()
+					synctest.Wait()
+					t.Fatal("middleware short circuit did not close the undelivered request body")
+				}
+				synctest.Wait()
+			})
+		})
+	}
 }
 
 func TestOrderedHeadersAttachMetadataAndApplyHeaders(t *testing.T) {
@@ -2114,6 +2203,38 @@ type trackingReadCloser struct {
 	closed    atomic.Bool
 }
 
+type failingRetryBody struct {
+	readErr    error
+	closeErr   error
+	closeCalls atomic.Int32
+}
+
+type closeAwareRedirectBody struct {
+	closed       atomic.Bool
+	readAfterErr error
+}
+
+func (b *closeAwareRedirectBody) Read([]byte) (int, error) {
+	if b.closed.Load() {
+		return 0, b.readAfterErr
+	}
+	return 0, io.EOF
+}
+
+func (b *closeAwareRedirectBody) Close() error {
+	b.closed.Store(true)
+	return nil
+}
+
+func (b *failingRetryBody) Read([]byte) (int, error) {
+	return 0, b.readErr
+}
+
+func (b *failingRetryBody) Close() error {
+	b.closeCalls.Add(1)
+	return b.closeErr
+}
+
 func newTrackingReadCloser(body string) *trackingReadCloser {
 	return &trackingReadCloser{reader: strings.NewReader(body)}
 }
@@ -2193,6 +2314,82 @@ func TestRetryDrainsResponseBodyWithLimit(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode())
 	assert.Equal(t, int64(maxRetryDrainBytes), atomic.LoadInt64(&retryBody.readBytes))
 	assert.True(t, retryBody.closed.Load())
+}
+
+func TestRetryCleanupFailureStopsRetry(t *testing.T) {
+	readErr := errors.New("retry response read failed")
+	closeErr := errors.New("retry response close failed")
+	retryBody := &failingRetryBody{readErr: readErr, closeErr: closeErr}
+	var attempts atomic.Int32
+	client := newTestClient(t,
+		WithHTTPClient(&http.Client{Transport: testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			attempts.Add(1)
+			return &http.Response{
+				Status:     "500 Internal Server Error",
+				StatusCode: http.StatusInternalServerError,
+				Header:     http.Header{},
+				Body:       retryBody,
+				Request:    req,
+			}, nil
+		})}),
+		WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+	)
+
+	resp, err := client.Get("http://example.com").Send(t.Context())
+
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, readErr)
+	assert.ErrorIs(t, err, closeErr)
+	assert.Equal(t, int32(1), attempts.Load())
+	assert.Equal(t, int32(1), retryBody.closeCalls.Load())
+}
+
+func TestRetrySkipsCleanupForRedirectErrorResponse(t *testing.T) {
+	redirectErr := errors.New("redirect rejected")
+	readAfterCloseErr := errors.New("read after response close")
+	redirectBody := &closeAwareRedirectBody{readAfterErr: readAfterCloseErr}
+	var attempts atomic.Int32
+	httpClient := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return redirectErr
+		},
+		Transport: testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			if attempts.Add(1) == 1 {
+				return &http.Response{
+					Status:     "302 Found",
+					StatusCode: http.StatusFound,
+					Header:     http.Header{"Location": []string{"https://example.com/final"}},
+					Body:       redirectBody,
+					Request:    req,
+				}, nil
+			}
+			return &http.Response{
+				Status:     "200 OK",
+				StatusCode: http.StatusOK,
+				Header:     http.Header{},
+				Body:       http.NoBody,
+				Request:    req,
+			}, nil
+		}),
+	}
+	client := newTestClient(t,
+		WithHTTPClient(httpClient),
+		WithRetry(RetryPolicy{
+			Max:     1,
+			Backoff: DefaultBackoffStrategy(0),
+			ShouldRetry: func(_ *http.Request, _ *http.Response, err error) bool {
+				return errors.Is(err, redirectErr)
+			},
+		}),
+	)
+
+	resp, err := client.Get("https://example.com/start").Send(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode())
+	assert.Equal(t, int32(2), attempts.Load())
+	assert.True(t, redirectBody.closed.Load())
+	require.NoError(t, resp.Close())
 }
 
 func TestRequestLevelRetries(t *testing.T) {
