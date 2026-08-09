@@ -108,6 +108,12 @@ func startTestHTTPServer() *httptest.Server {
 func assertHTTP2Configured(t *testing.T, transport *http.Transport) {
 	t.Helper()
 
+	require.True(t, transport.ForceAttemptHTTP2)
+	if transport.Protocols != nil {
+		assert.True(t, transport.Protocols.HTTP2())
+		return
+	}
+
 	require.NotNil(t, transport.TLSNextProto)
 	assert.Contains(t, transport.TLSNextProto, http2.NextProtoTLS)
 	require.NotNil(t, transport.TLSClientConfig)

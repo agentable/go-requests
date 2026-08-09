@@ -606,7 +606,13 @@ func configureHTTP2Transport(transport *http.Transport) error {
 }
 
 func isHTTP2Configured(transport *http.Transport) bool {
-	if transport == nil || transport.TLSNextProto == nil {
+	if transport == nil {
+		return false
+	}
+	if transport.Protocols != nil && transport.Protocols.HTTP2() {
+		return true
+	}
+	if transport.TLSNextProto == nil {
 		return false
 	}
 	_, ok := transport.TLSNextProto[http2.NextProtoTLS]
