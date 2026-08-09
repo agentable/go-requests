@@ -72,3 +72,8 @@ ANALYSIS.md
 
 # Meeting records
 .meetings/
+
+# Local planning and tooling state
+analytics.md
+
+.plan/*.md
