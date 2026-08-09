@@ -3,7 +3,7 @@ module github.com/agentable/go-requests/fingerprint
 go 1.26.5
 
 require (
-	github.com/agentable/go-requests v0.1.0
+	github.com/agentable/go-requests v0.1.1
 	github.com/refraction-networking/utls v1.8.2
 	github.com/test-go/testify v1.1.4
 )
