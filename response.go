@@ -137,17 +137,6 @@ func (r *Response) TLS() *tls.ConnectionState {
 	return state
 }
 
-func cloneByteSlices(values [][]byte) [][]byte {
-	if values == nil {
-		return nil
-	}
-	cloned := make([][]byte, len(values))
-	for i, value := range values {
-		cloned[i] = slices.Clone(value)
-	}
-	return cloned
-}
-
 // ContentType returns the value of the "Content-Type" header.
 func (r *Response) ContentType() string {
 	return r.Header().Get("Content-Type")

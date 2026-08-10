@@ -25,11 +25,11 @@ The audit is grouped by concern. Each row describes:
 | Field | Default | Source | Why |
 |---|---|---|---|
 | `http.Client.Timeout` | `0` | `client.go: newClient` | Zero passes through to `net/http`'s "no timeout" behavior. We deliberately do not impose a 30 s default: many call sites already use `context.WithTimeout`, and adding a hidden ceiling would surprise long-poll, SSE, and large-download users. Callers who forget to set a timeout are no worse off than they would be using `net/http` directly. |
-| `WithDialTimeout` | not applied | `client_option.go` / `client.go` | Dial timeout is only configured when the caller explicitly sets it; otherwise the underlying `http.Transport` default applies. |
-| `WithTLSHandshakeTimeout` | not applied | `client_option.go` / `client.go` | Same passthrough rule. |
-| `WithResponseHeaderTimeout` | not applied | `client_option.go` / `client.go` | Same passthrough rule. |
-| `WithIdleConnTimeout` | not applied | `client_option.go` / `client.go` | Same passthrough rule. |
-| `RequestBuilder.Timeout` | `0` (no per-request deadline) | `request.go: prepareContext` | Per-request timeout layered onto the caller's `ctx` only when set; `ctx`'s own deadline is preserved otherwise. |
+| `WithDialTimeout` | not applied | `client_option.go` / `transport.go` | Dial timeout is only configured when the caller explicitly sets it; otherwise the underlying `http.Transport` default applies. |
+| `WithTLSHandshakeTimeout` | not applied | `client_option.go` / `transport.go` | Same passthrough rule. |
+| `WithResponseHeaderTimeout` | not applied | `client_option.go` / `transport.go` | Same passthrough rule. |
+| `WithIdleConnTimeout` | not applied | `client_option.go` / `transport.go` | Same passthrough rule. |
+| `RequestBuilder.Timeout` | `0` (no per-request deadline) | `delivery.go: prepareContext` | Per-request timeout layered onto the caller's `ctx` only when set; `ctx`'s own deadline is preserved otherwise. |
 
 ## Retries
 
@@ -39,14 +39,14 @@ The audit is grouped by concern. Each row describes:
 | `RetryPolicy.Backoff` | `DefaultBackoffStrategy(1*time.Second)` | `retry.go: DefaultRetryPolicy` | Always populated so callers who set `Max` without thinking about backoff still get a sane delay between attempts. The constant 1 s is short enough for unit tests and long enough to avoid hammering a flapping server. |
 | `RetryPolicy.ShouldRetry` | `DefaultRetryIf` | `retry.go: DefaultRetryPolicy` | Retries timeout-classified errors, errors containing `*net.OpError`, 408, 429, and 5xx. Deterministic TLS verification errors are not retried. Callers who want stricter behavior must override. |
 | `RetryPolicy.IgnoreRetryAfter` | `false` | `retry.go: RetryPolicy` | `Retry-After` should be honored by default for 429 and 503 responses. Callers can opt out when their latency budget makes backoff authoritative. |
-| Body replay | auto-snapshot for `*bytes.Buffer` and `ReadAt+Seek+Size` readers | `request.go: snapshotReaderBody` | The library opts callers into replay safely (buffer if cheap, refuse otherwise) instead of silently re-sending unreplayable streams. |
+| Body replay | auto-snapshot for `*bytes.Buffer` and `ReadAt+Seek+Size` readers | `body.go: snapshotReaderBody` | The library opts callers into replay safely (buffer if cheap, refuse otherwise) instead of silently re-sending unreplayable streams. |
 
 ## TLS
 
 | Field | Default | Source | Why |
 |---|---|---|---|
 | TLS config | `nil` (Go default `tls.Config`) | `client.go: newClient` | Passthrough to `crypto/tls`. The Go standard library already defaults to a safe configuration; we do not override it. |
-| Internally created `tls.Config` | `MinVersion: tls.VersionTLS12` | `client.go: updateTLSConfigLocked` | When the library has to construct a TLS config because the caller supplied SNI, certificates, or CA material through client helpers/options, it pins TLS 1.2 as the floor. Callers supplying their own `tls.Config` choose their own floor. |
+| Internally created `tls.Config` | `MinVersion: tls.VersionTLS12` | `tls.go: updateTLSConfigLocked` | When the library has to construct a TLS config because the caller supplied SNI, certificates, or CA material through client helpers/options, it pins TLS 1.2 as the floor. Callers supplying their own `tls.Config` choose their own floor. |
 | `WithClientCertificate` | not applied | `client_option.go` | mTLS is opt in. File-loading errors fail construction instead of being logged and ignored. |
 | `WithTLSServerName` | not applied | `client_option.go` | SNI defaults to the request host. Only set when callers need a different value. |
 
@@ -60,7 +60,7 @@ The audit is grouped by concern. Each row describes:
 
 | Field | Default | Source | Why |
 |---|---|---|---|
-| Proxy | `http.ProxyFromEnvironment` through the nil/default transport | `client.go: newClient`; `proxy.go: ensureTransport` | Default passthrough matches `net/http`. Standard transport options clone `http.DefaultTransport`, so changing an unrelated field does not change proxy behavior. Callers use `WithoutProxy()` for explicit direct delivery. |
+| Proxy | `http.ProxyFromEnvironment` through the nil/default transport | `client.go: newClient`; `transport.go: ensureTransport` | Default passthrough matches `net/http`. Standard transport options clone `http.DefaultTransport`, so changing an unrelated field does not change proxy behavior. Callers use `WithoutProxy()` for explicit direct delivery. |
 | Bypass list | empty | `proxy.go` | Bypass rules are explicit through `WithProxyBypass`. |
 
 ## Codecs
@@ -78,13 +78,13 @@ The audit is grouped by concern. Each row describes:
 | default headers | nil | `client.go: newClient` | No default headers. Callers add `User-Agent`, `Accept`, etc. explicitly. |
 | ordered header intent | nil | `client.go: newClient` | Ordered header intent is opt in; standard transport semantics apply otherwise. |
 | `http.Client.Jar` | nil | `client.go: newClient` | No cookie persistence by default. `WithSession()` enables a `cookiejar.Jar`. |
-| Content-Type inference | none | `request.go: prepareBody` | Request bodies must be explicit: typed helpers set their own content type, while raw/stream bodies may omit it. The library no longer guesses from Go value shape. |
+| Content-Type inference | none | `body.go: prepareBody` | Request bodies must be explicit: typed helpers set their own content type, while raw/stream bodies may omit it. The library no longer guesses from Go value shape. |
 
 ## Connection Pool
 
 | Field | Default | Source | Why |
 |---|---|---|---|
-| `WithMaxIdleConns` / `WithMaxIdleConnsPerHost` / `WithMaxConnsPerHost` | not applied | `client_option.go` / `client.go` | Transport pool sizing only changes when the caller explicitly opts in. |
+| `WithMaxIdleConns` / `WithMaxIdleConnsPerHost` / `WithMaxConnsPerHost` | not applied | `client_option.go` / `transport.go` | Transport pool sizing only changes when the caller explicitly opts in. |
 
 ## Logger
 
@@ -96,7 +96,7 @@ The audit is grouped by concern. Each row describes:
 
 | Field | Default | Source | Why |
 |---|---|---|---|
-| `WithHTTP2` | not applied | `client_option.go` / `client.go` | The Go standard library already negotiates HTTP/2 over TLS by default; this option is a manual override for callers who want explicit HTTP/2 transport. |
+| `WithHTTP2` | not applied | `client_option.go` / `transport.go` | The Go standard library already negotiates HTTP/2 over TLS by default; this option is a manual override for callers who want explicit HTTP/2 transport. |
 | HTTP/3 | not enabled | `http3/` extension | HTTP/3 is opt in via the extension module. The core does not link `quic-go`. |
 
 ## Profiles

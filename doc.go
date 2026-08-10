@@ -52,8 +52,7 @@
 //     [RequestBuilder.FormFields]. The body is buffered or re-readable, so
 //     retries are safe.
 //   - One-shot: [RequestBuilder.Reader] given a raw [io.Reader] that is not
-//     seekable, [RequestBuilder.Files], and non-replayable
-//     [RequestBuilder.Multipart].
+//     seekable, and non-replayable [RequestBuilder.Multipart].
 //     Such bodies cannot be replayed; if a retry is required, Send returns
 //     [ErrRequestBodyNotReplayable] instead of silently re-sending or silently
 //     skipping the retry. Use [Multipart.Replayable] when a multipart body must

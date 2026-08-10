@@ -392,16 +392,3 @@ func TestRetryRotatesProxy(t *testing.T) {
 	// Retry should have rotated: attempt 1 → proxy 1 (503), attempt 2 → proxy 2 (200)
 	assert.Equal(t, []string{"1", "2"}, proxyIDs)
 }
-
-func TestEnsureTransportInvalidType(t *testing.T) {
-	_, err := New(
-		WithHTTPClient(&http.Client{
-			Transport: testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
-				return nil, nil
-			}),
-		}),
-		WithProxy("http://proxy.example.com"),
-	)
-	assert.Error(t, err)
-	assert.ErrorIs(t, err, ErrInvalidTransportType)
-}

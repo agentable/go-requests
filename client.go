@@ -3,19 +3,15 @@ package requests
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
-	"os"
-	"path/filepath"
 	"slices"
 	"sync"
 	"time"
 
 	"github.com/agentable/go-orderedobject"
-	"golang.org/x/net/http2"
 	"golang.org/x/net/publicsuffix"
 )
 
@@ -158,39 +154,6 @@ func cloneCookies(cookies []*http.Cookie) []*http.Cookie {
 	return clones
 }
 
-func cloneTLSConfig(config *tls.Config) *tls.Config {
-	if config == nil {
-		return nil
-	}
-	return config.Clone()
-}
-
-func cloneCertificates(certificates []tls.Certificate) []tls.Certificate {
-	clones := slices.Clone(certificates)
-	for i := range clones {
-		clones[i].Certificate = cloneByteSlices(clones[i].Certificate)
-		clones[i].SupportedSignatureAlgorithms = slices.Clone(clones[i].SupportedSignatureAlgorithms)
-		clones[i].OCSPStaple = slices.Clone(clones[i].OCSPStaple)
-		clones[i].SignedCertificateTimestamps = cloneByteSlices(clones[i].SignedCertificateTimestamps)
-	}
-	return clones
-}
-
-func cloneHTTPClient(client *http.Client, tlsConfig *tls.Config) *http.Client {
-	if client == nil {
-		return &http.Client{}
-	}
-	clone := *client
-	if transport, ok := client.Transport.(*http.Transport); ok {
-		clonedTransport := transport.Clone()
-		if tlsConfig != nil {
-			clonedTransport.TLSClientConfig = tlsConfig
-		}
-		clone.Transport = clonedTransport
-	}
-	return &clone
-}
-
 // setBaseURL sets the base URL.
 func (c *Client) setBaseURL(baseURL string) {
 	c.mu.Lock()
@@ -205,130 +168,6 @@ func (c *Client) addMiddleware(middlewares ...Middleware) {
 	defer c.mu.Unlock()
 
 	c.middlewares = append(c.middlewares, middlewares...)
-}
-
-func (c *Client) syncTLSConfigLocked() error {
-	if c.httpClient == nil {
-		c.httpClient = &http.Client{}
-	}
-	transport, err := c.ensureTransport()
-	if err != nil {
-		return err
-	}
-	transport.TLSClientConfig = c.tlsConfig
-	if isHTTP2Configured(transport) {
-		ensureHTTP2NextProtos(transport)
-		transport.ForceAttemptHTTP2 = true
-	}
-	return nil
-}
-
-// setTLSConfig replaces the TLS configuration.
-func (c *Client) setTLSConfig(config *tls.Config) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	config = cloneTLSConfig(config)
-	previous := c.tlsConfig
-	c.tlsConfig = config
-	if err := c.syncTLSConfigLocked(); err != nil {
-		c.tlsConfig = previous
-		return err
-	}
-	return nil
-}
-
-func (c *Client) updateTLSConfigLocked(update func(*tls.Config) error) error {
-	config := cloneTLSConfig(c.tlsConfig)
-	if config == nil {
-		config = &tls.Config{MinVersion: tls.VersionTLS12}
-	}
-	if err := update(config); err != nil {
-		return err
-	}
-
-	previous := c.tlsConfig
-	c.tlsConfig = config
-	if err := c.syncTLSConfigLocked(); err != nil {
-		c.tlsConfig = previous
-		return err
-	}
-	return nil
-}
-
-// InsecureSkipVerify sets the TLS configuration to skip certificate verification.
-func (c *Client) insecureSkipVerify() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.updateTLSConfigLocked(func(config *tls.Config) error {
-		config.InsecureSkipVerify = true
-		return nil
-	})
-}
-
-// setCertificates replaces the TLS client certificates.
-func (c *Client) setCertificates(certs ...tls.Certificate) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.updateTLSConfigLocked(func(config *tls.Config) error {
-		config.Certificates = cloneCertificates(certs)
-		return nil
-	})
-}
-
-// setTLSServerName sets the TLS server name (SNI).
-func (c *Client) setTLSServerName(serverName string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.updateTLSConfigLocked(func(config *tls.Config) error {
-		config.ServerName = serverName
-		return nil
-	})
-}
-
-// setRootCertificate loads root certificates from a PEM file.
-func (c *Client) setRootCertificate(pemFilePath string) error {
-	cleanPath := filepath.Clean(pemFilePath)
-	rootPemData, err := os.ReadFile(cleanPath)
-	if err != nil {
-		return fmt.Errorf("read root certificate: %w", err)
-	}
-	return c.addRootCAs(rootPemData)
-}
-
-// setRootCertificateFromString loads root certificates from PEM text.
-func (c *Client) setRootCertificateFromString(pemCerts string) error {
-	return c.addRootCAs([]byte(pemCerts))
-}
-
-func (c *Client) addRootCAs(pemCerts []byte) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.updateTLSConfigLocked(func(config *tls.Config) error {
-		roots := config.RootCAs
-		if roots == nil {
-			roots = x509.NewCertPool()
-		} else {
-			roots = roots.Clone()
-		}
-		if !roots.AppendCertsFromPEM(pemCerts) {
-			return invalidOptionValue("RootCertificate")
-		}
-		config.RootCAs = roots
-		return nil
-	})
-}
-
-// setHTTPClient replaces the underlying HTTP client.
-func (c *Client) setHTTPClient(httpClient *http.Client) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.httpClient = httpClient
 }
 
 // setDefaultHeaders replaces the default semantic headers.
@@ -371,34 +210,6 @@ func (c *Client) setDefaultHeader(key, value string) {
 	}
 }
 
-// addDefaultHeader adds a default header value.
-func (c *Client) addDefaultHeader(key, value string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.headers == nil {
-		c.headers = &http.Header{}
-	}
-	c.headers.Add(key, value)
-	if c.orderedHeaders != nil {
-		addOrderedHeaderValue(&c.orderedHeaders, key, value)
-	}
-}
-
-// delDefaultHeader removes a default header.
-func (c *Client) delDefaultHeader(key string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.headers == nil {
-		return
-	}
-	c.headers.Del(key)
-	if c.orderedHeaders != nil {
-		deleteOrderedHeader(c.orderedHeaders, key)
-	}
-}
-
 // setDefaultContentType sets the default content type.
 func (c *Client) setDefaultContentType(contentType string) {
 	c.setDefaultHeader("Content-Type", contentType)
@@ -425,14 +236,6 @@ func (c *Client) setDefaultTimeout(timeout time.Duration) {
 	defer c.mu.Unlock()
 
 	c.httpClient.Timeout = timeout
-}
-
-// setDefaultTransport replaces the underlying transport.
-func (c *Client) setDefaultTransport(transport http.RoundTripper) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.httpClient.Transport = transport
 }
 
 // setDefaultCookieJar replaces the underlying cookie jar.
@@ -486,20 +289,6 @@ func (c *Client) setDefaultCookie(name, value string) {
 	defer c.mu.Unlock()
 
 	c.cookies = append(c.cookies, &http.Cookie{Name: name, Value: value}) //nolint:gosec // callers control default cookie attributes
-}
-
-// delDefaultCookie removes a default cookie.
-func (c *Client) delDefaultCookie(name string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.cookies == nil {
-		return
-	}
-
-	c.cookies = slices.DeleteFunc(c.cookies, func(cookie *http.Cookie) bool {
-		return cookie.Name == name
-	})
 }
 
 func (c *Client) snapshot() clientSnapshot {
@@ -560,80 +349,6 @@ func (c *Client) GetBaseURL() string {
 	return c.baseURL
 }
 
-// GetTLSConfig returns a clone of the configured TLS settings.
-func (c *Client) GetTLSConfig() *tls.Config {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.tlsConfig == nil {
-		return nil
-	}
-	return c.tlsConfig.Clone()
-}
-
-func (c *Client) configureHTTP2() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.enableHTTP2Locked()
-}
-
-func (c *Client) enableHTTP2Locked() error {
-	if c.httpClient == nil {
-		c.httpClient = &http.Client{}
-	}
-	transport, err := c.ensureTransport()
-	if err != nil {
-		return err
-	}
-	if c.tlsConfig != nil {
-		transport.TLSClientConfig = c.tlsConfig
-	}
-	return configureHTTP2Transport(transport)
-}
-
-func configureHTTP2Transport(transport *http.Transport) error {
-	if transport == nil {
-		return nil
-	}
-	if isHTTP2Configured(transport) {
-		ensureHTTP2NextProtos(transport)
-		transport.ForceAttemptHTTP2 = true
-		return nil
-	}
-
-	transport.ForceAttemptHTTP2 = true
-	return http2.ConfigureTransport(transport)
-}
-
-func isHTTP2Configured(transport *http.Transport) bool {
-	if transport == nil {
-		return false
-	}
-	if transport.Protocols != nil && transport.Protocols.HTTP2() {
-		return true
-	}
-	if transport.TLSNextProto == nil {
-		return false
-	}
-	_, ok := transport.TLSNextProto[http2.NextProtoTLS]
-	return ok
-}
-
-func ensureHTTP2NextProtos(transport *http.Transport) {
-	if transport.TLSClientConfig == nil {
-		transport.TLSClientConfig = &tls.Config{}
-	}
-	if !slices.Contains(transport.TLSClientConfig.NextProtos, http2.NextProtoTLS) {
-		transport.TLSClientConfig.NextProtos = slices.Concat(
-			[]string{http2.NextProtoTLS},
-			transport.TLSClientConfig.NextProtos,
-		)
-	}
-	if !slices.Contains(transport.TLSClientConfig.NextProtos, "http/1.1") {
-		transport.TLSClientConfig.NextProtos = append(transport.TLSClientConfig.NextProtos, "http/1.1")
-	}
-}
-
 func (c *Client) setRetry(policy RetryPolicy) *Client {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -673,144 +388,6 @@ func (c *Client) setLogger(logger Logger) *Client {
 
 	c.logger = logger
 	return c
-}
-
-// withTransport executes a function on the client's transport, handling locking and error checking.
-// Returns the client for method chaining. Errors from ensureTransport are silently ignored to
-// maintain the fluent API pattern.
-func (c *Client) withTransport(fn func(*http.Transport)) *Client {
-	_ = c.applyTransport(fn)
-	return c
-}
-
-func (c *Client) applyTransport(fn func(*http.Transport)) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	transport, err := c.ensureTransport()
-	if err != nil {
-		return err
-	}
-	fn(transport)
-	return nil
-}
-
-func (c *Client) applyDialContextLocked(transport *http.Transport) {
-	if c.dialContext != nil {
-		transport.DialContext = c.dialContext
-		return
-	}
-	if c.dialTimeout == 0 && c.resolver == nil && c.localAddr == nil {
-		transport.DialContext = nil
-		return
-	}
-	dialer := &net.Dialer{
-		Timeout:   c.dialTimeout,
-		Resolver:  c.resolver,
-		LocalAddr: c.localAddr,
-	}
-	transport.DialContext = dialer.DialContext
-}
-
-// setDialTimeout sets the TCP connection timeout on the underlying transport.
-func (c *Client) setDialTimeout(d time.Duration) *Client {
-	_ = c.applyDialTimeout(d)
-	return c
-}
-
-func (c *Client) applyDialTimeout(d time.Duration) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.dialTimeout = d
-	transport, err := c.ensureTransport()
-	if err != nil {
-		return err
-	}
-	c.applyDialContextLocked(transport)
-	return nil
-}
-
-func (c *Client) applyResolver(resolver *net.Resolver) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.resolver = resolver
-	transport, err := c.ensureTransport()
-	if err != nil {
-		return err
-	}
-	c.applyDialContextLocked(transport)
-	return nil
-}
-
-func (c *Client) applyDialContext(dial func(context.Context, string, string) (net.Conn, error)) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.dialContext = dial
-	transport, err := c.ensureTransport()
-	if err != nil {
-		return err
-	}
-	c.applyDialContextLocked(transport)
-	return nil
-}
-
-func (c *Client) applyLocalAddr(addr net.Addr) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.localAddr = addr
-	transport, err := c.ensureTransport()
-	if err != nil {
-		return err
-	}
-	c.applyDialContextLocked(transport)
-	return nil
-}
-
-// setTLSHandshakeTimeout sets the TLS handshake timeout on the underlying transport.
-func (c *Client) setTLSHandshakeTimeout(d time.Duration) *Client {
-	return c.withTransport(func(t *http.Transport) {
-		t.TLSHandshakeTimeout = d
-	})
-}
-
-// setResponseHeaderTimeout sets the time to wait for response headers after the request
-// is sent. This does not include the time to read the response body.
-func (c *Client) setResponseHeaderTimeout(d time.Duration) *Client {
-	return c.withTransport(func(t *http.Transport) {
-		t.ResponseHeaderTimeout = d
-	})
-}
-
-// setMaxIdleConns sets the maximum number of idle connections across all hosts.
-func (c *Client) setMaxIdleConns(n int) *Client {
-	return c.withTransport(func(t *http.Transport) {
-		t.MaxIdleConns = n
-	})
-}
-
-// setMaxIdleConnsPerHost sets the maximum number of idle connections per host.
-func (c *Client) setMaxIdleConnsPerHost(n int) *Client {
-	return c.withTransport(func(t *http.Transport) {
-		t.MaxIdleConnsPerHost = n
-	})
-}
-
-// setMaxConnsPerHost sets the maximum total number of connections per host.
-func (c *Client) setMaxConnsPerHost(n int) *Client {
-	return c.withTransport(func(t *http.Transport) {
-		t.MaxConnsPerHost = n
-	})
-}
-
-// setIdleConnTimeout sets how long idle connections remain in the pool before being closed.
-func (c *Client) setIdleConnTimeout(d time.Duration) *Client {
-	return c.withTransport(func(t *http.Transport) {
-		t.IdleConnTimeout = d
-	})
 }
 
 // Get initiates a GET request.

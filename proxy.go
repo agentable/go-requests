@@ -111,23 +111,6 @@ func verifyProxy(proxyURL string) (*url.URL, error) {
 	}
 }
 
-// ensureTransport returns the client's transport as *http.Transport, creating one if needed.
-// Must be called with c.mu held.
-func (c *Client) ensureTransport() (*http.Transport, error) {
-	if c.httpClient.Transport == nil {
-		baseline, ok := http.DefaultTransport.(*http.Transport)
-		if !ok {
-			return nil, fmt.Errorf("%w: expected default *http.Transport, got %T", ErrInvalidTransportType, http.DefaultTransport)
-		}
-		c.httpClient.Transport = baseline.Clone()
-	}
-	transport, ok := c.httpClient.Transport.(*http.Transport)
-	if !ok {
-		return nil, fmt.Errorf("%w: expected *http.Transport, got %T", ErrInvalidTransportType, c.httpClient.Transport)
-	}
-	return transport, nil
-}
-
 // setProxy configures the client to use a proxy. Supports http, https, and socks5 proxies.
 func (c *Client) setProxy(proxyURL string) error {
 	c.mu.Lock()

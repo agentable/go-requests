@@ -23,20 +23,6 @@ import (
 	"github.com/test-go/testify/require"
 )
 
-func TestRequestNilResponseError(t *testing.T) {
-	t.Parallel()
-
-	client := newTestClient(t, WithBaseURL("https://example.com"))
-	client.addMiddleware(func(MiddlewareHandlerFunc) MiddlewareHandlerFunc {
-		return func(*http.Request) (*http.Response, error) {
-			return nil, nil
-		}
-	})
-
-	_, err := client.Get("/").Send(context.Background())
-	assert.ErrorIs(t, err, ErrResponseNil)
-}
-
 type closeSignalBody struct {
 	io.ReadCloser
 	closed chan<- struct{}
@@ -1553,21 +1539,6 @@ func TestFormWithURLValues(t *testing.T) {
 	assert.Equal(t, "application/x-www-form-urlencoded", response["contentType"], "The content type should be set correctly.")
 }
 
-func TestPrepareBodyWithFormFields(t *testing.T) {
-	builder := newTestClient(t).Post("/").Form(url.Values{
-		"name": {"Jane Doe"},
-		"age":  {"32"},
-	})
-
-	body, err := builder.prepareBody(&clientSnapshot{})
-	require.NoError(t, err)
-	assert.Equal(t, "application/x-www-form-urlencoded", body.contentType)
-
-	data, err := io.ReadAll(body.body)
-	require.NoError(t, err)
-	assert.Equal(t, url.Values{"name": {"Jane Doe"}, "age": {"32"}}.Encode(), string(data))
-}
-
 func TestDelQuery(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprint(w, r.URL.RawQuery)
@@ -1879,56 +1850,6 @@ func TestReaderPreservesCurrentOffset(t *testing.T) {
 	assert.Equal(t, "payload", resp.String())
 }
 
-func TestBuiltInBodyGetBodyReturnsFreshReaders(t *testing.T) {
-	client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		if req.GetBody == nil {
-			return nil, fmt.Errorf("missing GetBody")
-		}
-		first, err := req.GetBody()
-		if err != nil {
-			return nil, err
-		}
-		defer first.Close() //nolint:errcheck // test transport cleanup
-		second, err := req.GetBody()
-		if err != nil {
-			return nil, err
-		}
-		defer second.Close() //nolint:errcheck // test transport cleanup
-
-		prefix := make([]byte, 1)
-		if _, err := io.ReadFull(first, prefix); err != nil {
-			return nil, err
-		}
-		firstRest, err := io.ReadAll(first)
-		if err != nil {
-			return nil, err
-		}
-		secondBody, err := io.ReadAll(second)
-		if err != nil {
-			return nil, err
-		}
-		firstBody := make([]byte, 0, len(prefix)+len(firstRest))
-		firstBody = append(firstBody, prefix...)
-		firstBody = append(firstBody, firstRest...)
-		if !bytes.Equal(firstBody, secondBody) {
-			return nil, fmt.Errorf("GetBody readers are not independent")
-		}
-		_ = req.Body.Close()
-		return &http.Response{
-			Status:     "200 OK",
-			StatusCode: http.StatusOK,
-			Header:     http.Header{},
-			Body:       http.NoBody,
-			Request:    req,
-		}, nil
-	})))
-
-	resp, err := client.Post("https://example.com").JSON(map[string]string{"message": "hello"}).Send(t.Context())
-
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode())
-}
-
 func TestDefaultRetryOn408And429(t *testing.T) {
 	t.Run("408", func(t *testing.T) {
 		var requestCount int32
@@ -2140,61 +2061,6 @@ func TestRetryRejectsNonReplayableJSONReader(t *testing.T) {
 		Send(context.Background())
 	assert.ErrorIs(t, err, ErrRequestBodyNotReplayable)
 	assert.Equal(t, int32(1), requestCount)
-}
-
-func TestRetryPolicyControlsTransportErrors(t *testing.T) {
-	t.Run("false policy does not retry transport error", func(t *testing.T) {
-		var attempts int32
-		client := newTestClient(t,
-			WithHTTPClient(&http.Client{Transport: testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
-				atomic.AddInt32(&attempts, 1)
-				return nil, assert.AnError
-			})}),
-			WithRetry(RetryPolicy{
-				Max:     2,
-				Backoff: DefaultBackoffStrategy(0),
-				ShouldRetry: func(*http.Request, *http.Response, error) bool {
-					return false
-				},
-			}),
-		)
-
-		_, err := client.Get("http://example.com").Send(t.Context())
-		require.Error(t, err)
-		assert.ErrorIs(t, err, assert.AnError)
-		assert.Equal(t, int32(1), attempts)
-	})
-
-	t.Run("true policy retries transport error", func(t *testing.T) {
-		var attempts int32
-		client := newTestClient(t,
-			WithHTTPClient(&http.Client{Transport: testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
-				if atomic.AddInt32(&attempts, 1) == 1 {
-					return nil, assert.AnError
-				}
-				return &http.Response{
-					Status:     "200 OK",
-					StatusCode: http.StatusOK,
-					Header:     http.Header{},
-					Body:       io.NopCloser(strings.NewReader("ok")),
-					Request:    req,
-				}, nil
-			})}),
-			WithRetry(RetryPolicy{
-				Max:     2,
-				Backoff: DefaultBackoffStrategy(0),
-				ShouldRetry: func(_ *http.Request, _ *http.Response, err error) bool {
-					return err != nil
-				},
-			}),
-		)
-
-		resp, err := client.Get("http://example.com").Send(t.Context())
-		require.NoError(t, err)
-		assert.Equal(t, http.StatusOK, resp.StatusCode())
-		assert.Equal(t, int32(2), attempts)
-		assert.Equal(t, 2, resp.Attempts())
-	})
 }
 
 type trackingReadCloser struct {

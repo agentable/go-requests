@@ -3,7 +3,6 @@ package requests
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/xml"
 	"fmt"
@@ -12,7 +11,6 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
@@ -20,7 +18,6 @@ import (
 	"github.com/goccy/go-yaml"
 	"github.com/stretchr/testify/assert"
 	"github.com/test-go/testify/require"
-	"golang.org/x/net/http2"
 )
 
 // startTestHTTPServer starts a test HTTP server that responds to various endpoints for testing purposes.
@@ -103,75 +100,6 @@ func startTestHTTPServer() *httptest.Server {
 	})
 
 	return httptest.NewServer(handler)
-}
-
-func assertHTTP2Configured(t *testing.T, transport *http.Transport) {
-	t.Helper()
-
-	require.True(t, transport.ForceAttemptHTTP2)
-	if transport.Protocols != nil {
-		assert.True(t, transport.Protocols.HTTP2())
-		return
-	}
-
-	require.NotNil(t, transport.TLSNextProto)
-	assert.Contains(t, transport.TLSNextProto, http2.NextProtoTLS)
-	require.NotNil(t, transport.TLSClientConfig)
-	assert.Contains(t, transport.TLSClientConfig.NextProtos, http2.NextProtoTLS)
-	assert.Contains(t, transport.TLSClientConfig.NextProtos, "http/1.1")
-}
-
-// testRoundTripperFunc type is an adapter to allow the use of ordinary functions as http.RoundTrippers.
-type testRoundTripperFunc func(*http.Request) (*http.Response, error)
-
-// RoundTrip executes a single HTTP transaction.
-func (f testRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
-}
-
-// TestSetHTTPClient verifies that SetHTTPClient correctly sets a custom http.Client
-// and uses it for subsequent requests, specifically checking for cookie modifications.
-func TestSetHTTPClient(t *testing.T) {
-	// Create a mock server that inspects incoming requests for a specific cookie.
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check for the presence of a specific cookie.
-		cookie, err := r.Cookie("X-Custom-Test-Cookie")
-		if err != nil || cookie.Value != "true" {
-			// If the cookie is missing or not as expected, respond with a 400 Bad Request.
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		// If the cookie is present and correct, respond with a 200 OK.
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer mockServer.Close()
-
-	client := newTestClient(t, WithBaseURL(mockServer.URL))
-
-	// Define a custom transport that adds a custom cookie to all outgoing requests.
-	customTransport := testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		// Add the custom cookie to the request.
-		req.AddCookie(&http.Cookie{Name: "X-Custom-Test-Cookie", Value: "true"})
-		// Proceed with the default transport after adding the cookie.
-		return http.DefaultTransport.RoundTrip(req)
-	})
-
-	// Set the custom http.Client with the custom transport to your Client.
-	client.setHTTPClient(&http.Client{
-		Transport: customTransport,
-	})
-
-	// Send a request using the custom http.Client.
-	resp, err := client.Get("/test").Send(context.Background())
-	if err != nil {
-		t.Fatalf("Failed to send request: %v", err)
-	}
-	defer resp.Close() //nolint:errcheck // test cleanup closes response body
-
-	// Verify that the server responded with a 200 OK, indicating the custom cookie was successfully added.
-	if resp.StatusCode() != http.StatusOK {
-		t.Errorf("Expected status code 200, got %d. Indicates custom cookie was not recognized by the server.", resp.StatusCode())
-	}
 }
 
 func TestClientURL(t *testing.T) {
@@ -562,47 +490,6 @@ func TestSetDefaultHeaders(t *testing.T) {
 	}
 }
 
-func TestAddDefaultHeader(t *testing.T) {
-	var received []string
-
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		received = append([]string(nil), r.Header.Values("X-Custom-Header")...)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer mockServer.Close()
-
-	client := newTestClient(t, WithBaseURL(mockServer.URL))
-	client.addDefaultHeader("X-Custom-Header", "HeaderValue1")
-	client.addDefaultHeader("X-Custom-Header", "HeaderValue2")
-
-	_, err := client.Get("/").Send(context.Background())
-	require.NoError(t, err)
-	assert.Len(t, received, 2)
-	assert.Contains(t, received, "HeaderValue1")
-	assert.Contains(t, received, "HeaderValue2")
-}
-
-func TestDelDefaultHeader(t *testing.T) {
-	// Mock server to check for the absence of a specific header
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Deleted-Header") != "" {
-			t.Error("Deleted default header 'X-Deleted-Header' was found in the request")
-		}
-	}))
-	defer mockServer.Close()
-
-	// Initialize the client, set, and then delete a default header
-	client := newTestClient(t, WithBaseURL(mockServer.URL))
-	client.setDefaultHeader("X-Deleted-Header", "ShouldBeDeleted")
-	client.delDefaultHeader("X-Deleted-Header")
-
-	// Make a request to check for the absence of the deleted header
-	_, err := client.Get("/").Send(context.Background())
-	if err != nil {
-		t.Fatalf("Failed to send request: %v", err)
-	}
-}
-
 func TestSetDefaultContentType(t *testing.T) {
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check the Content-Type header
@@ -768,28 +655,6 @@ func TestSetDefaultCookies(t *testing.T) {
 	}
 }
 
-func TestDelDefaultCookie(t *testing.T) {
-	// Mock server to check for absence of a specific cookie
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, err := r.Cookie("session_id")
-		if err == nil {
-			t.Error("Deleted default cookie 'session_id' was found in the request")
-		}
-	}))
-	defer mockServer.Close()
-
-	// Initialize the client, set, and then delete a default cookie
-	client := newTestClient(t, WithBaseURL(mockServer.URL))
-	client.setDefaultCookie("session_id", "abcd1234")
-	client.delDefaultCookie("session_id")
-
-	// Make a request to check for the absence of the deleted cookie
-	_, err := client.Get("/").Send(context.Background())
-	if err != nil {
-		t.Fatalf("Failed to send request: %v", err)
-	}
-}
-
 func TestGettersAndSnapshot(t *testing.T) {
 	client := newTestClient(t, WithBaseURL("https://example.com"))
 	client.setDefaultHeader("X-Test", "1")
@@ -821,128 +686,6 @@ func TestClientUsesExampleHostWithTLSServer(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Close() //nolint:errcheck // test cleanup closes response body
 	assert.Equal(t, http.StatusOK, resp.StatusCode())
-}
-
-// Helper function to create a test TLS server.
-func createTestTLSServer() (*httptest.Server, error) {
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	// Load server certificate and key.
-	cert, err := tls.LoadX509KeyPair(".github/testdata/cert.pem", ".github/testdata/key.pem")
-	if err != nil {
-		server.Close()
-		return nil, fmt.Errorf("load test certificate: %w", err)
-	}
-
-	server.TLS = &tls.Config{
-		Certificates: []tls.Certificate{cert},
-	}
-	server.StartTLS()
-
-	return server, nil
-}
-
-func TestSetTLSConfig(t *testing.T) {
-	// Start a test TLS server.
-	server, err := createTestTLSServer()
-	require.NoError(t, err)
-	defer server.Close()
-
-	// Initialize your client pointing to the test server.
-	client := newTestClient(t, WithBaseURL(server.URL))
-
-	// Configure TLS to skip certificate verification.
-	// Note: This is for testing with self-signed certificates only.
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: true,
-	}
-	require.NoError(t, client.setTLSConfig(tlsConfig))
-
-	// Make a request to the test server.
-	response, err := client.Get("/").Send(context.Background())
-
-	// Ensure no error occurred and the request was successful.
-	if err != nil {
-		t.Fatalf("Failed to send request with custom TLS config: %v", err)
-	}
-	if response == nil {
-		t.Fatal("Expected non-nil response")
-	}
-}
-
-func TestSetTLSConfigWithCert(t *testing.T) {
-	server, err := createTestTLSServer()
-	require.NoError(t, err)
-	defer server.Close()
-
-	client := newTestClient(t, WithBaseURL(server.URL))
-
-	cert, err := os.ReadFile(".github/testdata/cert.pem")
-	if err != nil {
-		t.Fatalf("Failed to load server certificate: %v", err)
-	}
-
-	certPool := x509.NewCertPool()
-	if !certPool.AppendCertsFromPEM(cert) {
-		t.Fatal("Failed to append server certificate to pool")
-	}
-	require.NoError(t, err, "Failed to load server certificate")
-
-	tlsConfig := &tls.Config{
-		RootCAs: certPool,
-	}
-	require.NoError(t, client.setTLSConfig(tlsConfig))
-
-	// Make a request to the test server.
-	response, err := client.Get("/").Send(context.Background())
-
-	// Ensure no error occurred and the request was successful.
-	if err != nil {
-		t.Fatalf("Failed to send request with custom TLS config: %v", err)
-	}
-	if response == nil {
-		t.Fatal("Expected non-nil response")
-	}
-}
-
-func TestInsecureSkipVerify(t *testing.T) {
-	// Start a test TLS server.
-	server, err := createTestTLSServer()
-	require.NoError(t, err)
-	defer server.Close()
-
-	// Initialize your client pointing to the test server.
-	client := newTestClient(t, WithBaseURL(server.URL))
-
-	// Configure TLS to skip certificate verification.
-	require.NoError(t, client.insecureSkipVerify())
-
-	// Make a request to the test server.
-	response, err := client.Get("/").Send(context.Background())
-
-	// Ensure no error occurred and the request was successful.
-	if err != nil {
-		t.Fatalf("Failed to send request with custom TLS config: %v", err)
-	}
-	if response == nil {
-		t.Fatal("Expected non-nil response")
-	}
-}
-
-func TestCreateTestTLSServerMissingCertificate(t *testing.T) {
-	originalCertPath := ".github/testdata/cert.pem"
-	tempCertPath := ".github/testdata/cert.pem.bak"
-	require.NoError(t, os.Rename(originalCertPath, tempCertPath))
-	defer func() {
-		require.NoError(t, os.Rename(tempCertPath, originalCertPath))
-	}()
-
-	server, err := createTestTLSServer()
-	require.Error(t, err)
-	assert.Nil(t, server)
-	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
 func createTestRetryServer(t *testing.T) *httptest.Server {
@@ -1018,216 +761,6 @@ func TestRetryPolicyCondition(t *testing.T) {
 	if retryCount != 2 {
 		t.Errorf("Expected 2 retries, got %d", retryCount)
 	}
-}
-
-func TestClientCertificates(t *testing.T) {
-	serverCert, err := tls.LoadX509KeyPair(".github/testdata/cert.pem", ".github/testdata/key.pem")
-	require.NoError(t, err, "load server certificate failed")
-
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("certificate verification successful"))
-		} else {
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte("lack of client certificate"))
-		}
-	}))
-	clientCertPool := x509.NewCertPool()
-	clientCertData, err := os.ReadFile(".github/testdata/cert.pem")
-	require.NoError(t, err, "load client certificate failed")
-	clientCertPool.AppendCertsFromPEM(clientCertData)
-
-	server.TLS = &tls.Config{
-		Certificates: []tls.Certificate{serverCert},
-		ClientCAs:    clientCertPool,
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-	}
-	server.StartTLS()
-	defer server.Close()
-
-	client := newTestClient(t, WithBaseURL(server.URL))
-
-	t.Run("use client certificate", func(t *testing.T) {
-		clientCert, err := tls.LoadX509KeyPair(".github/testdata/cert.pem", ".github/testdata/key.pem")
-		require.NoError(t, err, "load client certificate failed")
-
-		require.NoError(t, client.setTLSConfig(&tls.Config{
-			InsecureSkipVerify: true,
-		}))
-		require.NoError(t, client.setCertificates(clientCert))
-		resp, err := client.Get("/").Send(context.Background())
-		if err != nil {
-			t.Fatalf("Failed to send request: %v", err)
-		}
-		defer resp.Close() //nolint:errcheck // test cleanup closes response body
-
-		assert.Equal(t, http.StatusOK, resp.StatusCode(), "status code not correct")
-		assert.Equal(t, "certificate verification successful", resp.String(), "response content not correct")
-	})
-
-	t.Run("do not use client certificate", func(t *testing.T) {
-		clientWithoutCert := newTestClient(t, WithBaseURL(server.URL))
-		require.NoError(t, clientWithoutCert.setTLSConfig(&tls.Config{
-			InsecureSkipVerify: true,
-		}))
-
-		_, err := clientWithoutCert.Get("/").Send(context.Background())
-		assert.Error(t, err, "expect request failed")
-	})
-}
-
-func TestClientSetRootCertificate(t *testing.T) {
-	t.Run("root cert", func(t *testing.T) {
-		filePath := ".github/testdata/cert.pem"
-
-		client := newTestClient(t)
-		require.NoError(t, client.setRootCertificate(filePath))
-
-		if transport, ok := client.httpClient.Transport.(*http.Transport); ok {
-			assert.NotNil(t, transport.TLSClientConfig.RootCAs)
-		}
-	})
-
-	t.Run("root cert not exists", func(t *testing.T) {
-		filePath := "../.testdata/not-exists-sample-root.pem"
-
-		client := newTestClient(t)
-		assert.Error(t, client.setRootCertificate(filePath))
-		assert.Nil(t, client.GetTLSConfig())
-	})
-
-	t.Run("root cert from string", func(t *testing.T) {
-		client := newTestClient(t)
-
-		cert, err := os.ReadFile(".github/testdata/cert.pem")
-		require.NoError(t, err)
-
-		require.NoError(t, client.setRootCertificateFromString(string(cert)))
-		if transport, ok := client.httpClient.Transport.(*http.Transport); ok {
-			assert.NotNil(t, transport.TLSClientConfig.RootCAs)
-		}
-	})
-}
-
-func TestTransportTimeoutsViaOptions(t *testing.T) {
-	t.Parallel()
-
-	client := newTestClient(t,
-		WithDialTimeout(5*time.Second),
-		WithTLSHandshakeTimeout(4*time.Second),
-		WithResponseHeaderTimeout(3*time.Second),
-	)
-
-	transport, ok := client.httpClient.Transport.(*http.Transport)
-	require.True(t, ok)
-	assert.NotNil(t, transport.DialContext)
-	assert.Equal(t, 4*time.Second, transport.TLSHandshakeTimeout)
-	assert.Equal(t, 3*time.Second, transport.ResponseHeaderTimeout)
-}
-
-func TestTransportTimeoutsViaSetMethods(t *testing.T) {
-	t.Parallel()
-
-	client := newTestClient(t)
-	client.setDialTimeout(5 * time.Second)
-	client.setTLSHandshakeTimeout(4 * time.Second)
-	client.setResponseHeaderTimeout(3 * time.Second)
-
-	transport, ok := client.httpClient.Transport.(*http.Transport)
-	require.True(t, ok)
-	assert.NotNil(t, transport.DialContext)
-	assert.Equal(t, 4*time.Second, transport.TLSHandshakeTimeout)
-	assert.Equal(t, 3*time.Second, transport.ResponseHeaderTimeout)
-}
-
-func TestConnectionPoolOptions(t *testing.T) {
-	client := newTestClient(t,
-		WithMaxIdleConns(50),
-		WithMaxIdleConnsPerHost(10),
-		WithMaxConnsPerHost(20),
-		WithIdleConnTimeout(30*time.Second),
-	)
-
-	transport, ok := client.httpClient.Transport.(*http.Transport)
-	require.True(t, ok)
-	assert.Equal(t, 50, transport.MaxIdleConns)
-	assert.Equal(t, 10, transport.MaxIdleConnsPerHost)
-	assert.Equal(t, 20, transport.MaxConnsPerHost)
-	assert.Equal(t, 30*time.Second, transport.IdleConnTimeout)
-}
-
-func TestConnectionPoolConfigSetMethods(t *testing.T) {
-	client := newTestClient(t)
-	client.setMaxIdleConns(50).
-		setMaxIdleConnsPerHost(10).
-		setMaxConnsPerHost(20).
-		setIdleConnTimeout(30 * time.Second)
-
-	transport, ok := client.httpClient.Transport.(*http.Transport)
-	require.True(t, ok)
-	assert.Equal(t, 50, transport.MaxIdleConns)
-	assert.Equal(t, 10, transport.MaxIdleConnsPerHost)
-	assert.Equal(t, 20, transport.MaxConnsPerHost)
-	assert.Equal(t, 30*time.Second, transport.IdleConnTimeout)
-}
-
-func TestHTTP2OptionsPreserveHTTPTransportSettings(t *testing.T) {
-	t.Parallel()
-
-	tlsConfig := &tls.Config{InsecureSkipVerify: true}
-	client := newTestClient(t,
-		WithHTTP2(),
-		WithTLSConfig(tlsConfig),
-		WithDialTimeout(5*time.Second),
-		WithTLSHandshakeTimeout(4*time.Second),
-		WithResponseHeaderTimeout(3*time.Second),
-		WithMaxIdleConns(50),
-		WithMaxIdleConnsPerHost(10),
-		WithMaxConnsPerHost(20),
-		WithIdleConnTimeout(30*time.Second),
-	)
-
-	transport, ok := client.httpClient.Transport.(*http.Transport)
-	require.True(t, ok)
-	assert.NotSame(t, tlsConfig, transport.TLSClientConfig)
-	assert.True(t, transport.TLSClientConfig.InsecureSkipVerify)
-	assert.NotNil(t, transport.DialContext)
-	assert.Equal(t, 4*time.Second, transport.TLSHandshakeTimeout)
-	assert.Equal(t, 3*time.Second, transport.ResponseHeaderTimeout)
-	assert.Equal(t, 50, transport.MaxIdleConns)
-	assert.Equal(t, 10, transport.MaxIdleConnsPerHost)
-	assert.Equal(t, 20, transport.MaxConnsPerHost)
-	assert.Equal(t, 30*time.Second, transport.IdleConnTimeout)
-	assertHTTP2Configured(t, transport)
-}
-
-func TestHTTP2OptionsNegotiateHTTP2(t *testing.T) {
-	t.Parallel()
-
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = fmt.Fprint(w, "ok")
-	}))
-	server.EnableHTTP2 = true
-	server.StartTLS()
-	defer server.Close()
-
-	client := newTestClient(t,
-		WithHTTP2(),
-		WithTLSConfig(&tls.Config{
-			InsecureSkipVerify: true,
-		}),
-	)
-
-	resp, err := client.Get(server.URL).Send(context.Background())
-	require.NoError(t, err)
-	defer resp.Close() //nolint:errcheck // test cleanup closes response body
-	assert.Equal(t, "HTTP/2.0", resp.Protocol())
-}
-
-func TestTransportConfigNoOpWhenNoSettings(t *testing.T) {
-	client := newTestClient(t, WithBaseURL("http://example.com"))
-	assert.Nil(t, client.httpClient.Transport)
 }
 
 func TestErrorIntrospection(t *testing.T) {

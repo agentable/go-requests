@@ -35,9 +35,13 @@ cd http3 && go test -race ./...
 
 ```text
 go-requests/
-├── client.go        # Client construction, defaults, transport, TLS, profile, and verb helpers
+├── client.go        # Client construction, defaults, snapshots, session, profile, and verb helpers
 ├── client_option.go # Functional options for New(...)
-├── request.go       # RequestBuilder state, body handling, middleware, retries, and dispatch
+├── transport.go     # Standard transport cloning, HTTP/2, dialing, and connection pools
+├── tls.go           # TLS configuration, certificates, and root CAs
+├── request.go       # RequestBuilder state, URL resolution, and request metadata
+├── body.go          # Request body selection, encoding, snapshots, and replay preparation
+├── delivery.go      # Request-local delivery policy, retries, and buffered/stream dispatch
 ├── response.go      # Buffered responses, decoding helpers, save, TLS, and line iteration
 ├── ordered_headers.go # Ordered header metadata and merge helpers
 ├── profile.go       # Core Profile interface and application hook
