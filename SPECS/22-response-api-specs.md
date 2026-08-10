@@ -20,6 +20,15 @@ are best-effort and do not replace a successful result or a read error. The
 `Raw().Body` exposed on success is the replacement reader over owned bytes, not
 the live transport body.
 
+`RequestBuilder.MaxResponseBodyBytes` can bound buffering for one `Send` call.
+Zero means unlimited. When a positive ceiling is exceeded, `Send` closes the
+transport body exactly once and returns no partial `Response`. The error matches
+`ErrResponseBodyTooLarge`; `ResponseBodyLimitError` reports `LimitBytes` and
+`ObservedBytes`. Declared oversize responses may be rejected from
+`Content-Length`; responses without a usable declaration read no more than the
+limit plus one proof byte. Ordinary read failures continue to wrap
+`ErrResponseReadFailed`, including cancellation causes.
+
 Callers do not need to call `Response.Close` for connection reuse.
 `Response.Close` only closes the replacement reader over buffered bytes;
 caller-owned transport cleanup belongs exclusively to `StreamResponse`.
@@ -27,6 +36,11 @@ caller-owned transport cleanup belongs exclusively to `StreamResponse`.
 > **Why**: Buffered helpers and caller-owned streaming solve different workloads. Keeping them separate avoids ambiguous ownership of the response body.
 >
 > **Rejected**: A hybrid response that partially buffers streamed data while also promising caller-owned streaming.
+
+Verification uses public `Send` tests for unlimited, under-limit,
+exactly-at-limit, declared oversize, and unknown-length oversize responses,
+plus cancellation and body-close ownership tests. `SendStream` ownership tests
+verify that a positive buffering limit does not pre-read or truncate streams.
 
 ## Accessors and Status Helpers
 
@@ -100,6 +114,8 @@ line, and a trailing newline follow `bufio.ScanLines` semantics.
 
 - Do not call `Decode` and expect fallback decoding for unsupported content types.
 - Do not pass unsupported target types to `Save`.
+- Do not treat an oversize buffered response as truncated success; use
+  `SendStream` when the caller intentionally owns partial reads.
 
 ## Contract Invariants
 

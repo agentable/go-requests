@@ -20,7 +20,10 @@ proxy URLs, profile option errors, and file-loading failures from certificate
 options fail during construction or cloning. A caller that receives a non-nil
 `*Client` receives a validated client.
 
-Invalid or typed-nil auth, nil middleware, empty/nil redirect policies, and PEM input containing no certificates also fail construction with `ErrInvalidConfigValue`. Validation happens before values are installed, so a failed `Clone` does not mutate the base client.
+Invalid or typed-nil auth, nil middleware, nil or typed-nil cookie jars,
+empty/nil redirect policies, and PEM input containing no certificates also fail
+construction with `ErrInvalidConfigValue`. Validation happens before values are
+installed, so a failed `Clone` does not mutate the base client.
 
 > **Why**: Construction is a trust boundary. A client should either be valid and
 > ready to create requests, or construction should return an error the caller can
@@ -59,6 +62,11 @@ through public runtime setters; callers derive a modified client with
 header is an empty default set, and later mutation of the caller's map or value
 slices cannot change the client. `Client.Clone` owns another independent header
 copy.
+
+`WithCookieJar(http.CookieJar)` accepts any non-nil implementation of the
+standard interface and installs it by identity. The jar remains a borrowed
+collaborator; callers own its concurrency safety and lifecycle. `WithSession`
+preserves an existing standard cookie jar instead of replacing it.
 
 Ordered headers preserve caller-specified insertion order as request intent. The implementation uses `github.com/agentable/go-orderedobject` as the ordered storage model. Default `net/http` transports preserve header semantics but do not guarantee wire order; wire-order delivery is only guaranteed by transports that explicitly support ordered-header metadata.
 

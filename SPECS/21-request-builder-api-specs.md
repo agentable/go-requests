@@ -18,7 +18,8 @@ A builder is mutable until `Send(ctx)` is called.
 Fluent helpers that cannot return an error directly retain the first
 preparation failure on the builder. This applies to `QueriesStruct`, `Form`,
 `FormFields`, invalid or typed-nil request-local `Auth`, and nil entries passed
-to `AddMiddleware`.
+to `AddMiddleware`. It also applies to negative request-local timeout, retry
+count, and buffered response limit values.
 
 `Send` and `SendStream` return that original cause before taking a client
 snapshot, deriving a context, opening or encoding a body, applying middleware,
@@ -127,9 +128,28 @@ A builder MAY define request-local delivery policy through:
 
 `Timeout` only creates a derived deadline when the provided context does not already have one.
 
+Zero timeout means no request-local deadline. A negative timeout is invalid and
+returns `ErrInvalidConfigValue` through the preparation-error contract.
+
 `Retry(policy)` replaces the client retry policy for that request. `NoRetry()` disables retries even when the client has a positive default.
 
+`RetryPolicy.Max` is the number of retries after the initial attempt. Zero means
+no retries. A negative value is invalid and returns `ErrInvalidConfigValue`
+before dispatch; private normalization remains defensive and is not the public
+input contract.
+
 Request bodies that can be replayed SHOULD be restored before each retry attempt. Non-replayable bodies MUST NOT be retried after the first attempt once delivery has started.
+
+## Buffered Response Limit
+
+`MaxResponseBodyBytes(maxBytes int64)` sets the ceiling for bytes buffered by
+`Send` for one request. Zero means unlimited. A negative value is invalid and
+follows the preparation-error contract.
+
+The ceiling applies to the final response selected by retry and redirect
+delivery. Exceeding it returns no partial `Response` and matches
+`ErrResponseBodyTooLarge`. `SendStream` does not apply a positive buffering
+ceiling because the caller owns streaming reads.
 
 ## Middleware and Streaming
 
@@ -150,7 +170,8 @@ A builder MAY attach request-local middleware with `AddMiddleware`.
 4. derives the request timeout context and only then opens or encodes the body
 5. constructs the outbound `http.Request` and applies auth, headers, and cookies
 6. executes middleware and retry policy
-7. returns a buffered `Response`
+7. buffers the response within the request-local byte ceiling and returns a
+   complete `Response`, or no response with `ErrResponseBodyTooLarge`
 
 Invalid context, method, or resolved URL returns `ErrRequestCreationFailed`
 before streaming producers start. URL-resolution and retained preparation

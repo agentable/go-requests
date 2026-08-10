@@ -14,7 +14,7 @@ A fluent HTTP client library for Go with middleware, retries, proxy and redirect
 - **Ordered headers**: Express header order as request intent with `orderedobject`, while preserving `net/http` header semantics.
 - **Optional profiles**: Apply browser-like headers, TLS ClientHello fingerprints, or HTTP/3 through separate extension modules.
 - **`net/http` adapters**: Use configured `requests` clients as `*http.Client` or `http.RoundTripper` in other SDKs.
-- **Response helpers**: Decode JSON, XML, or YAML, check status helpers, inspect diagnostics, iterate buffered response lines, or save to disk.
+- **Response helpers**: Bound buffered responses, decode JSON/XML/YAML, inspect diagnostics, iterate lines, or save to disk without accepting truncated data.
 - **Composable middleware**: Attach header or cookie middleware at the client or request level.
 
 ## Installation
@@ -177,10 +177,12 @@ if err != nil {
 
 ## Making Requests
 
-Builder helpers remain fluent even when encoding can fail. `QueriesStruct`,
-`Form`, `FormFields`, request-local `Auth`, and `AddMiddleware` retain the first
-preparation error; `Send` or `SendStream` returns it before encoding a body or
-dispatching a request. Logs are never the only error channel.
+Builder helpers remain fluent even when encoding or validation can fail.
+`QueriesStruct`, `Form`, `FormFields`, request-local `Auth`, `AddMiddleware`,
+and negative request-local timeout, retry, or response-limit values retain the
+first preparation error. `Send` or `SendStream` returns it before encoding a
+body or dispatching a request. Logs are never the only error channel. Zero
+keeps the no-timeout, no-retry, and unlimited-buffer meanings.
 
 The resolved URL, method, and context are validated by `net/http` before a
 streaming body is opened. Invalid request shape returns
@@ -374,6 +376,9 @@ if err != nil {
 
 `WithSession()` creates a cookie jar and TLS session cache when missing. `WithDialContext` and `WithLocalAddr` are available for custom gateway and network binding setups.
 
+`WithCookieJar` accepts any non-nil `http.CookieJar`. The client borrows that
+jar by identity; `WithSession` preserves it instead of replacing it.
+
 Root TLS, session, proxy, dial, and pool options configure the standard `*http.Transport`. When a transport profile such as HTTP/3 is active, unsupported later options return `ErrInvalidTransportType`; they never replace the selected protocol silently. Put TLS/session options before an HTTP/3 profile when the profile should consume them.
 
 `WithTLSConfig(nil)` explicitly clears TLS state established by an earlier root
@@ -438,6 +443,32 @@ removed across origins; cookies supplied by the client's Jar still follow
 `net/http` domain, path, and secure rules.
 
 ## Responses
+
+### Bound a buffered response
+
+Use a request-local ceiling when a complete response must fit a known memory
+budget. `Send` returns no partial response when the body exceeds the limit.
+
+```go
+resp, err := client.Get("/reports/current").
+	MaxResponseBodyBytes(2 << 20).
+	Send(ctx)
+if errors.Is(err, requests.ErrResponseBodyTooLarge) {
+	var detail *requests.ResponseBodyLimitError
+	if errors.As(err, &detail) {
+		fmt.Printf("response exceeded %d bytes\n", detail.LimitBytes)
+	}
+	return err
+}
+if err != nil {
+	return err
+}
+fmt.Println(resp.ContentLength())
+```
+
+Zero leaves buffering unlimited. A negative limit is invalid request
+configuration. `SendStream` remains caller-owned and does not apply the
+positive buffering ceiling.
 
 ### Decode structured payloads
 

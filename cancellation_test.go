@@ -30,7 +30,7 @@ func TestCancelBeforeSend(t *testing.T) {
 	cancel()
 
 	client := newTestClient(t, WithBaseURL(server.URL))
-	resp, err := client.Get("/").Send(ctx)
+	resp, err := client.Get("/").MaxResponseBodyBytes(1 << 20).Send(ctx)
 
 	require.Error(t, err)
 	assert.True(t, IsCanceled(err), "expected IsCanceled to match cancellation, got %v", err)
@@ -63,7 +63,7 @@ func TestCancelDuringResponseHeader(t *testing.T) {
 		cancel()
 	}()
 
-	resp, err := client.Get("/").Send(ctx)
+	resp, err := client.Get("/").MaxResponseBodyBytes(1 << 20).Send(ctx)
 
 	require.Error(t, err)
 	assert.True(t, IsCanceled(err) || isURLErrorCanceled(err),
@@ -109,7 +109,7 @@ func TestCancelDuringResponseBody(t *testing.T) {
 	defer cancel()
 
 	client := newTestClient(t, WithBaseURL(server.URL))
-	resp, err := client.Get("/").Send(ctx)
+	resp, err := client.Get("/").MaxResponseBodyBytes(1 << 20).Send(ctx)
 
 	require.Error(t, err, "Send must surface cancellation while buffering the body")
 	assert.True(t, IsCanceled(err) || errors.Is(err, context.Canceled) || isURLErrorCanceled(err),

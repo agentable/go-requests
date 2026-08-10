@@ -239,7 +239,7 @@ func (c *Client) setDefaultTimeout(timeout time.Duration) {
 }
 
 // setDefaultCookieJar replaces the underlying cookie jar.
-func (c *Client) setDefaultCookieJar(jar *cookiejar.Jar) {
+func (c *Client) setDefaultCookieJar(jar http.CookieJar) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

@@ -27,6 +27,7 @@ type recordingResponseBody struct {
 	readErr    error
 	closeErr   error
 	readCount  int
+	readBytes  int
 	closeCount int
 }
 
@@ -35,6 +36,7 @@ func (b *recordingResponseBody) Read(p []byte) (int, error) {
 	if len(b.data) > 0 {
 		n := copy(p, b.data)
 		b.data = b.data[n:]
+		b.readBytes += n
 		return n, nil
 	}
 	if b.readErr != nil {
@@ -1016,7 +1018,7 @@ func TestBufferedResponseClosesBodyOnReadError(t *testing.T) {
 	})}
 	client := newTestClient(t, WithHTTPClient(httpClient))
 
-	resp, err := client.Get("http://example.test/").Send(t.Context())
+	resp, err := client.Get("http://example.test/").MaxResponseBodyBytes(8).Send(t.Context())
 
 	assert.Nil(t, resp)
 	assert.ErrorIs(t, err, ErrResponseReadFailed)
@@ -1038,9 +1040,12 @@ func TestBufferedResponseClosesBodyAfterSuccessfulRead(t *testing.T) {
 	})}
 	client := newTestClient(t, WithHTTPClient(httpClient))
 
-	resp, err := client.Get("http://example.test/").Send(t.Context())
+	resp, err := client.Get("http://example.test/").
+		MaxResponseBodyBytes(int64(len(payload))).
+		Send(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, 1, body.closeCount)
+	assert.Equal(t, 1, resp.Attempts())
 	assert.Equal(t, payload, resp.Bytes())
 	assert.Equal(t, string(payload), resp.String())
 
@@ -1052,6 +1057,93 @@ func TestBufferedResponseClosesBodyAfterSuccessfulRead(t *testing.T) {
 	assert.Equal(t, payload, rawBody)
 	require.NoError(t, resp.Close())
 	assert.Equal(t, 1, body.closeCount)
+}
+
+func TestBufferedResponseBodyLimit(t *testing.T) {
+	tests := []struct {
+		name          string
+		limitBytes    int64
+		contentLength int64
+		payload       string
+		wantErr       bool
+		wantObserved  int64
+		wantReadBytes int
+	}{
+		{
+			name:          "zero is unlimited",
+			payload:       "unlimited",
+			contentLength: int64(len("unlimited")),
+			wantReadBytes: len("unlimited"),
+		},
+		{
+			name:          "under limit",
+			limitBytes:    6,
+			payload:       "small",
+			contentLength: int64(len("small")),
+			wantReadBytes: len("small"),
+		},
+		{
+			name:          "exactly at limit",
+			limitBytes:    5,
+			payload:       "exact",
+			contentLength: int64(len("exact")),
+			wantReadBytes: len("exact"),
+		},
+		{
+			name:          "declared oversize",
+			limitBytes:    5,
+			payload:       "oversize",
+			contentLength: int64(len("oversize")),
+			wantErr:       true,
+			wantObserved:  int64(len("oversize")),
+		},
+		{
+			name:          "chunked oversize",
+			limitBytes:    5,
+			payload:       "oversize",
+			contentLength: -1,
+			wantErr:       true,
+			wantObserved:  6,
+			wantReadBytes: 6,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := &recordingResponseBody{data: []byte(test.payload)}
+			httpClient := &http.Client{Transport: testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode:    http.StatusOK,
+					Header:        make(http.Header),
+					Body:          body,
+					ContentLength: test.contentLength,
+					Request:       req,
+				}, nil
+			})}
+			client := newTestClient(t, WithHTTPClient(httpClient))
+
+			resp, err := client.Get("http://example.test/").
+				MaxResponseBodyBytes(test.limitBytes).
+				Send(t.Context())
+
+			assert.Equal(t, 1, body.closeCount)
+			assert.Equal(t, test.wantReadBytes, body.readBytes)
+			if !test.wantErr {
+				require.NoError(t, err)
+				require.NotNil(t, resp)
+				assert.Equal(t, test.payload, resp.String())
+				return
+			}
+
+			assert.Nil(t, resp)
+			assert.ErrorIs(t, err, ErrResponseBodyTooLarge)
+			var detail *ResponseBodyLimitError
+			if assert.ErrorAs(t, err, &detail) {
+				assert.Equal(t, test.limitBytes, detail.LimitBytes)
+				assert.Equal(t, test.wantObserved, detail.ObservedBytes)
+			}
+		})
+	}
 }
 
 func TestBufferedResponseReadErrorTakesPrecedenceOverCloseError(t *testing.T) {
@@ -1093,7 +1185,7 @@ func TestSendStreamDoesNotPreReadAndClosesBodyOnce(t *testing.T) {
 	})}
 	client := newTestClient(t, WithHTTPClient(httpClient))
 
-	resp, err := client.Get("http://example.test/").SendStream(t.Context())
+	resp, err := client.Get("http://example.test/").MaxResponseBodyBytes(1).SendStream(t.Context())
 	require.NoError(t, err)
 	assert.Zero(t, body.readCount)
 	assert.Zero(t, body.closeCount)

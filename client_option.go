@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -167,9 +166,12 @@ func WithCookies(cookies map[string]string) Option {
 	}
 }
 
-// WithCookieJar sets the cookie jar for the client.
-func WithCookieJar(jar *cookiejar.Jar) Option {
+// WithCookieJar borrows a non-nil standard cookie jar for the client.
+func WithCookieJar(jar http.CookieJar) Option {
 	return func(c *Client) error {
+		if isNilInterface(jar) {
+			return invalidOptionValue("CookieJar")
+		}
 		c.setDefaultCookieJar(jar)
 		return nil
 	}

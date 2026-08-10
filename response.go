@@ -32,6 +32,7 @@ type Response struct {
 func newResponse(
 	resp *http.Response,
 	snap *clientSnapshot,
+	maxBodyBytes int64,
 ) (*Response, error) {
 	response := &Response{
 		rawResponse: resp,
@@ -43,7 +44,7 @@ func newResponse(
 		response.logger = snap.logger
 	}
 
-	if err := response.handleNonStream(); err != nil {
+	if err := response.handleNonStream(maxBodyBytes); err != nil {
 		return nil, err
 	}
 	return response, nil
@@ -54,14 +55,37 @@ func (r *Response) Raw() *http.Response {
 	return r.rawResponse
 }
 
-func (r *Response) handleNonStream() error {
+func (r *Response) handleNonStream(maxBodyBytes int64) error {
 	buf := getBuffer()
 	defer putBuffer(buf)
 	defer r.rawResponse.Body.Close() //nolint:errcheck // buffered response ownership treats close as best-effort
 
-	_, err := buf.ReadFrom(r.rawResponse.Body)
+	if maxBodyBytes > 0 && r.rawResponse.ContentLength > maxBodyBytes {
+		return &ResponseBodyLimitError{
+			LimitBytes:    maxBodyBytes,
+			ObservedBytes: r.rawResponse.ContentLength,
+		}
+	}
+
+	body := io.Reader(r.rawResponse.Body)
+	if maxBodyBytes > 0 {
+		body = io.LimitReader(body, maxBodyBytes)
+	}
+	readBytes, err := buf.ReadFrom(body)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrResponseReadFailed, err)
+	}
+	if maxBodyBytes > 0 && readBytes == maxBodyBytes {
+		probeBytes, probeErr := io.CopyN(io.Discard, r.rawResponse.Body, 1)
+		if probeBytes > 0 {
+			return &ResponseBodyLimitError{
+				LimitBytes:    maxBodyBytes,
+				ObservedBytes: readBytes + probeBytes,
+			}
+		}
+		if probeErr != nil && !errors.Is(probeErr, io.EOF) {
+			return fmt.Errorf("%w: %w", ErrResponseReadFailed, probeErr)
+		}
 	}
 
 	// Copy data before returning buffer to pool to prevent data race.

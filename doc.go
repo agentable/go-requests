@@ -7,7 +7,7 @@
 //   - Client owns reusable configuration: base URL, default headers and cookies,
 //     auth, retry policy, codecs, logger, and transport settings.
 //   - RequestBuilder owns one outbound request: method, path, request-local
-//     metadata, body, timeout, retries, and middleware.
+//     metadata, body, timeout, retries, buffered response limit, and middleware.
 //   - Response exposes the buffered result of one Send call.
 //   - StreamResponse exposes the unbuffered result of one SendStream call.
 //
@@ -64,6 +64,10 @@
 // not expose Must-style APIs. Use [errors.Is] with the sentinels declared in
 // errors.go to detect specific causes, and the helpers [IsTimeout],
 // [IsCanceled], and [IsConnectionError] to classify transport-level failures.
+// A request can bound buffered allocation with
+// [RequestBuilder.MaxResponseBodyBytes]. Exceeding the limit returns no partial
+// response and matches [ErrResponseBodyTooLarge]; [ResponseBodyLimitError]
+// provides the configured and observed byte counts.
 //
 // # Extensions
 //

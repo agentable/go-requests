@@ -14,21 +14,22 @@ import (
 
 // RequestBuilder facilitates building and executing HTTP requests.
 type RequestBuilder struct {
-	client         *Client
-	method         string
-	path           string
-	headers        *http.Header
-	orderedHeaders *orderedobject.Object[[]string]
-	cookies        []*http.Cookie
-	queries        url.Values
-	pathParams     map[string]string
-	body           requestBodySelection
-	timeout        time.Duration
-	middlewares    []Middleware
-	retryPolicy    RetryPolicy
-	hasRetryPolicy bool
-	auth           AuthMethod
-	preparationErr error
+	client               *Client
+	method               string
+	path                 string
+	headers              *http.Header
+	orderedHeaders       *orderedobject.Object[[]string]
+	cookies              []*http.Cookie
+	queries              url.Values
+	pathParams           map[string]string
+	body                 requestBodySelection
+	timeout              time.Duration
+	maxResponseBodyBytes int64
+	middlewares          []Middleware
+	retryPolicy          RetryPolicy
+	hasRetryPolicy       bool
+	auth                 AuthMethod
+	preparationErr       error
 }
 
 // NewRequestBuilder creates a new RequestBuilder with default settings.

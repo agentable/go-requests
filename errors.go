@@ -3,8 +3,29 @@ package requests
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 )
+
+// ResponseBodyLimitError reports a buffered response that exceeded its
+// request-local byte limit.
+type ResponseBodyLimitError struct {
+	// LimitBytes is the request-local maximum passed to MaxResponseBodyBytes.
+	LimitBytes int64
+	// ObservedBytes is the declared response length or the bytes read through
+	// the one-byte overflow probe that proved the response exceeded the limit.
+	ObservedBytes int64
+}
+
+// Error returns a bounded diagnostic containing only byte counts.
+func (e *ResponseBodyLimitError) Error() string {
+	return fmt.Sprintf("response body exceeds %d-byte limit (observed %d bytes)", e.LimitBytes, e.ObservedBytes)
+}
+
+// Unwrap makes ResponseBodyLimitError match ErrResponseBodyTooLarge.
+func (e *ResponseBodyLimitError) Unwrap() error {
+	return ErrResponseBodyTooLarge
+}
 
 // Sentinel errors returned by the package. Use [errors.Is] to match against
 // them. The classification helpers below ([IsTimeout], [IsCanceled],
@@ -41,6 +62,10 @@ var (
 	// ErrResponseReadFailed is returned when the response body cannot be read
 	// in full. Wrapped errors carry the I/O cause.
 	ErrResponseReadFailed = errors.New("failed to read response")
+
+	// ErrResponseBodyTooLarge is returned when Send would buffer more bytes
+	// than the request-local response body limit.
+	ErrResponseBodyTooLarge = errors.New("response body too large")
 
 	// ErrUnsupportedScheme is returned when a proxy URL uses a scheme other
 	// than http, https, or socks5.
@@ -87,8 +112,9 @@ var (
 	// not produced by Send.
 	ErrTestTimeout = errors.New("test timeout: request took too long")
 
-	// ErrInvalidConfigValue is returned by construction options when a value
-	// cannot be applied. Wrapped errors name the offending option.
+	// ErrInvalidConfigValue is returned by construction options and fluent
+	// request helpers when a value cannot be applied. Wrapped errors name the
+	// offending option or request setting.
 	ErrInvalidConfigValue = errors.New("invalid config value")
 )
 

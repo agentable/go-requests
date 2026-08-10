@@ -10,14 +10,37 @@ import (
 	"time"
 )
 
-// Timeout sets the request timeout.
+// Timeout sets the request timeout. A negative duration records an
+// ErrInvalidConfigValue returned by Send or SendStream before dispatch.
 func (b *RequestBuilder) Timeout(timeout time.Duration) *RequestBuilder {
+	if err := validateDurationOption("Timeout", timeout); err != nil {
+		b.setPreparationError(err)
+		return b
+	}
 	b.timeout = timeout
 	return b
 }
 
+// MaxResponseBodyBytes limits the bytes buffered by Send for this request.
+// Zero leaves the buffered response size unlimited.
+// A negative value records an ErrInvalidConfigValue returned by Send or
+// SendStream before body preparation or dispatch.
+func (b *RequestBuilder) MaxResponseBodyBytes(maxBytes int64) *RequestBuilder {
+	if maxBytes < 0 {
+		b.setPreparationError(invalidOptionValue("MaxResponseBodyBytes"))
+		return b
+	}
+	b.maxResponseBodyBytes = maxBytes
+	return b
+}
+
 // Retry sets the request-local retry policy, replacing the client policy.
+// A negative Max records an ErrInvalidConfigValue returned before dispatch.
 func (b *RequestBuilder) Retry(policy RetryPolicy) *RequestBuilder {
+	if err := validateIntOption("Retry.Max", policy.Max); err != nil {
+		b.setPreparationError(err)
+		return b
+	}
 	b.retryPolicy = policy
 	b.hasRetryPolicy = true
 	return b
@@ -178,7 +201,7 @@ func (b *RequestBuilder) Send(ctx context.Context) (*Response, error) {
 		return nil, ErrResponseNil
 	}
 
-	response, err := newResponse(resp, &snap)
+	response, err := newResponse(resp, &snap, b.maxResponseBodyBytes)
 	if response != nil {
 		response.elapsed = time.Since(start)
 		response.attempts = attempts

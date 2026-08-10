@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -18,6 +19,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/test-go/testify/require"
 )
+
+type testCookieJar struct{}
+
+func (*testCookieJar) SetCookies(*url.URL, []*http.Cookie) {}
+
+func (*testCookieJar) Cookies(*url.URL) []*http.Cookie { return nil }
 
 func TestNew_NoOptions(t *testing.T) {
 	c := newTestClient(t)
@@ -962,6 +969,32 @@ func TestNew_WithCookieJar(t *testing.T) {
 	assert.Equal(t, jar, c.httpClient.Jar)
 }
 
+func TestNew_WithStandardCookieJar(t *testing.T) {
+	jar := &testCookieJar{}
+	c := newTestClient(t, WithCookieJar(jar))
+	assert.Same(t, jar, c.httpClient.Jar)
+}
+
+func TestNew_RejectsNilCookieJar(t *testing.T) {
+	var nilJar http.CookieJar
+	tests := []struct {
+		name string
+		jar  http.CookieJar
+	}{
+		{name: "nil", jar: nilJar},
+		{name: "typed nil", jar: (*testCookieJar)(nil)},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client, err := New(WithCookieJar(test.jar))
+
+			assert.Nil(t, client)
+			assert.ErrorIs(t, err, ErrInvalidConfigValue)
+		})
+	}
+}
+
 func TestNew_WithSession(t *testing.T) {
 	c := newTestClient(t, WithSession())
 	require.NotNil(t, c.httpClient.Jar)
@@ -970,8 +1003,7 @@ func TestNew_WithSession(t *testing.T) {
 }
 
 func TestEnableSessionPreservesExistingSessionStores(t *testing.T) {
-	jar, err := cookiejar.New(nil)
-	require.NoError(t, err)
+	jar := &testCookieJar{}
 	cache := tls.NewLRUClientSessionCache(1)
 	c := newTestClient(t,
 		WithCookieJar(jar),

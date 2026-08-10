@@ -7,7 +7,8 @@
 ## Public Model
 
 - `Client` owns reusable configuration: base URL, default headers and cookies, auth, retry policy, codecs, logger, and transport settings.
-- `RequestBuilder` owns one outbound request's method, path, request-local metadata, body, timeout, retries, and middleware.
+- `RequestBuilder` owns one outbound request's method, path, request-local
+  metadata, body, timeout, retries, buffered response limit, and middleware.
 - `Response` exposes the buffered result of one `Send` call.
 - `StreamResponse` exposes the unbuffered result of one `SendStream` call.
 - Middleware, redirect policies, and proxy selection affect request delivery. They do not change the public roles of `Client`, `RequestBuilder`, `Response`, or `StreamResponse`.

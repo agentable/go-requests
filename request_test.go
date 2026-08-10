@@ -923,6 +923,121 @@ func TestRequestPreparationErrorKeepsFirstCause(t *testing.T) {
 	assert.False(t, source.closed.Load())
 }
 
+func TestNegativeResponseBodyLimitReturnsPreparationError(t *testing.T) {
+	tests := []struct {
+		name string
+		send func(*RequestBuilder) error
+	}{
+		{
+			name: "Send",
+			send: func(builder *RequestBuilder) error {
+				_, err := builder.Send(t.Context())
+				return err
+			},
+		},
+		{
+			name: "SendStream",
+			send: func(builder *RequestBuilder) error {
+				_, err := builder.SendStream(t.Context())
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var encoderCalls atomic.Int64
+			var transportCalls atomic.Int64
+			client := newTestClient(t,
+				WithJSONEncoder(countingEncoder{calls: &encoderCalls}),
+				WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+					transportCalls.Add(1)
+					return nil, fmt.Errorf("unexpected transport call")
+				})),
+			)
+			builder := client.Post("https://example.test/").
+				MaxResponseBodyBytes(-1).
+				JSON(struct{}{})
+
+			err := test.send(builder)
+
+			assert.ErrorIs(t, err, ErrInvalidConfigValue)
+			assert.Zero(t, encoderCalls.Load())
+			assert.Zero(t, transportCalls.Load())
+		})
+	}
+}
+
+func TestNegativeRequestDeliveryPolicyReturnsPreparationError(t *testing.T) {
+	tests := []struct {
+		name       string
+		configure  func(*RequestBuilder) *RequestBuilder
+		wantCause  string
+		otherCause string
+	}{
+		{
+			name: "timeout stays first",
+			configure: func(builder *RequestBuilder) *RequestBuilder {
+				return builder.Timeout(-time.Second).Retry(RetryPolicy{Max: -1})
+			},
+			wantCause:  "Timeout",
+			otherCause: "Retry.Max",
+		},
+		{
+			name: "retry stays first",
+			configure: func(builder *RequestBuilder) *RequestBuilder {
+				return builder.Retry(RetryPolicy{Max: -1}).Timeout(-time.Second)
+			},
+			wantCause:  "Retry.Max",
+			otherCause: "Timeout",
+		},
+	}
+	terminals := []struct {
+		name string
+		send func(*RequestBuilder) error
+	}{
+		{
+			name: "Send",
+			send: func(builder *RequestBuilder) error {
+				_, err := builder.Send(t.Context())
+				return err
+			},
+		},
+		{
+			name: "SendStream",
+			send: func(builder *RequestBuilder) error {
+				_, err := builder.SendStream(t.Context())
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		for _, terminal := range terminals {
+			t.Run(test.name+"/"+terminal.name, func(t *testing.T) {
+				var encoderCalls atomic.Int64
+				var transportCalls atomic.Int64
+				client := newTestClient(t,
+					WithJSONEncoder(countingEncoder{calls: &encoderCalls}),
+					WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+						transportCalls.Add(1)
+						return nil, fmt.Errorf("unexpected transport call")
+					})),
+				)
+				builder := test.configure(client.Post("https://example.test/")).JSON(struct{}{})
+
+				err := terminal.send(builder)
+
+				assert.ErrorIs(t, err, ErrInvalidConfigValue)
+				assert.ErrorContains(t, err, test.wantCause)
+				assert.NotContains(t, err.Error(), test.otherCause)
+				assert.Zero(t, encoderCalls.Load())
+				assert.Zero(t, transportCalls.Load())
+			})
+		}
+	}
+}
+
 func TestInvalidResolvedMethodFailsBeforeOpeningMultipart(t *testing.T) {
 	var transportCalls atomic.Int64
 	client := newTestClient(t, WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) {

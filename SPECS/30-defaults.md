@@ -31,6 +31,9 @@ The audit is grouped by concern. Each row describes:
 | `WithIdleConnTimeout` | not applied | `client_option.go` / `transport.go` | Same passthrough rule. |
 | `RequestBuilder.Timeout` | `0` (no per-request deadline) | `delivery.go: prepareContext` | Per-request timeout layered onto the caller's `ctx` only when set; `ctx`'s own deadline is preserved otherwise. |
 
+Negative client and request-local timeout values are invalid configuration;
+they do not change the zero-value default.
+
 ## Retries
 
 | Field | Default | Source | Why |
@@ -40,6 +43,15 @@ The audit is grouped by concern. Each row describes:
 | `RetryPolicy.ShouldRetry` | `DefaultRetryIf` | `retry.go: DefaultRetryPolicy` | Retries timeout-classified errors, errors containing `*net.OpError`, 408, 429, and 5xx. Deterministic TLS verification errors are not retried. Callers who want stricter behavior must override. |
 | `RetryPolicy.IgnoreRetryAfter` | `false` | `retry.go: RetryPolicy` | `Retry-After` should be honored by default for 429 and 503 responses. Callers can opt out when their latency budget makes backoff authoritative. |
 | Body replay | auto-snapshot for `*bytes.Buffer` and `ReadAt+Seek+Size` readers | `body.go: snapshotReaderBody` | The library opts callers into replay safely (buffer if cheap, refuse otherwise) instead of silently re-sending unreplayable streams. |
+
+Negative client and request-local retry counts are invalid configuration; they
+are not another spelling for the zero-retry default.
+
+## Buffered Responses
+
+| Field | Default | Source | Why |
+|---|---|---|---|
+| `RequestBuilder.MaxResponseBodyBytes` | `0` (unlimited) | `request.go: RequestBuilder`; `delivery.go: MaxResponseBodyBytes` | Matches the existing complete-buffer behavior until a caller supplies a ceiling for one request. Different request jobs can choose different limits without adding reusable client state. |
 
 ## TLS
 

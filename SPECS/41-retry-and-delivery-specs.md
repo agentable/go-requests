@@ -21,6 +21,9 @@ type RetryPolicy struct {
 
 - `0` means a single transport attempt with no retries.
 - `3` means up to four total attempts.
+- A negative value is invalid configuration. Client construction returns
+  `ErrInvalidConfigValue`; request-local `Retry` retains the same error and
+  returns it from `Send` or `SendStream` before body preparation or dispatch.
 
 Client defaults come from `WithRetry(policy)` during construction or cloning. Request-local overrides come from `RequestBuilder.Retry(policy)`. `RequestBuilder.NoRetry()` disables retries for one request.
 
