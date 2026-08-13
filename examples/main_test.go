@@ -27,6 +27,10 @@ func TestRunLogsFetchedPost(t *testing.T) {
 	assert.Contains(t, out.String(), "Post Received: {UserID:7 ID:42 Title:example Body:body}")
 }
 
+func TestRunExample(t *testing.T) {
+	require.NoError(t, runExample())
+}
+
 func TestRunReturnsFetchError(t *testing.T) {
 	t.Parallel()
 

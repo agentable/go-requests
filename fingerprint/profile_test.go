@@ -70,7 +70,10 @@ func TestProfileUsesDialContextSetAfterProfile(t *testing.T) {
 }
 
 func TestProfileUsesTLSConfigSetAfterProfile(t *testing.T) {
-	tlsConfig := &tls.Config{ServerName: "example.com"}
+	tlsConfig := &tls.Config{
+		ServerName: "example.com",
+		NextProtos: []string{"acme-tls/1"},
+	}
 	client, err := requests.New(
 		requests.WithProfile(Chrome()),
 		requests.WithTLSConfig(tlsConfig),
@@ -81,7 +84,64 @@ func TestProfileUsesTLSConfigSetAfterProfile(t *testing.T) {
 	require.True(t, ok)
 	require.False(t, transport.TLSClientConfig == tlsConfig)
 	require.Equal(t, "example.com", transport.TLSClientConfig.ServerName)
+	require.Len(t, transport.TLSClientConfig.NextProtos, 1)
+	require.Equal(t, "acme-tls/1", transport.TLSClientConfig.NextProtos[0])
 	require.NotNil(t, transport.DialTLSContext)
+}
+
+func TestProfileTLSDeliveryUsesDefaultConfigWhenNilIsSetAfterProfile(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	_, port, err := net.SplitHostPort(server.Listener.Addr().String())
+	require.NoError(t, err)
+
+	client, err := requests.New(
+		requests.WithProfile(Chrome()),
+		requests.WithTLSConfig(nil),
+	)
+	require.NoError(t, err)
+
+	transport, ok := client.UnsafeHTTPClient().Transport.(*http.Transport)
+	require.True(t, ok)
+	require.Nil(t, transport.TLSClientConfig)
+	conn, err := transport.DialTLSContext(t.Context(), "tcp", "localhost:"+port)
+
+	require.Nil(t, conn)
+	require.Error(t, err)
+	var unknownAuthorityError x509.UnknownAuthorityError
+	require.True(t, errors.As(err, &unknownAuthorityError), "TLS delivery error: %v", err)
+}
+
+func TestProfileTLSDeliveryUsesDefaultALPNWhenConfigIsSetAfterProfile(t *testing.T) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+	_, port, err := net.SplitHostPort(server.Listener.Addr().String())
+	require.NoError(t, err)
+
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	client, err := requests.New(
+		requests.WithProfile(Chrome()),
+		requests.WithTLSConfig(&tls.Config{RootCAs: roots, ServerName: "example.com"}),
+	)
+	require.NoError(t, err)
+
+	transport, ok := client.UnsafeHTTPClient().Transport.(*http.Transport)
+	require.True(t, ok)
+	require.Empty(t, transport.TLSClientConfig.NextProtos)
+	conn, err := transport.DialTLSContext(t.Context(), "tcp", "localhost:"+port)
+	require.NoError(t, err)
+	defer conn.Close() //nolint:errcheck // test cleanup closes the TLS connection
+
+	tlsConn, ok := conn.(*utls.UConn)
+	require.True(t, ok)
+	require.Equal(t, "h2", tlsConn.ConnectionState().NegotiatedProtocol)
 }
 
 func TestProfilePreservesStandardTransportOptions(t *testing.T) {

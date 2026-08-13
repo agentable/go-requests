@@ -85,7 +85,7 @@ func sanitizeURLDiagnosticErrorTree(err error) (bool, error) {
 			return false, err
 		}
 		diagnosticErr := &sanitizedDiagnosticError{err: sanitized, original: err}
-		if netErr, ok := err.(net.Error); ok {
+		if netErr, ok := err.(net.Error); ok { //nolint:errorlint // Preserve Timeout only when this outer wrapper implements net.Error; errors.As would promote a nested cause.
 			return true, &sanitizedDiagnosticNetError{sanitizedDiagnosticError: diagnosticErr, original: netErr}
 		}
 		if _, ok := err.(isError); ok {

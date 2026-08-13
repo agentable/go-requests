@@ -58,6 +58,9 @@ func ConfigureTransport(transport *http.Transport, helloID utls.ClientHelloID) e
 }
 
 func utlsConfig(config *tls.Config, addr string) *utls.Config {
+	if config == nil {
+		config = &tls.Config{}
+	}
 	clone := config.Clone()
 	if clone.ServerName == "" {
 		if host, _, err := net.SplitHostPort(addr); err == nil && net.ParseIP(host) == nil {

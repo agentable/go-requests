@@ -687,6 +687,34 @@ func TestResponseSaveToFileCreatesParentDirectories(t *testing.T) {
 	assert.Equal(t, "Sample response body", string(savedData))
 }
 
+func TestResponseSaveToFileRejectsInvalidPaths(t *testing.T) {
+	t.Parallel()
+
+	resp := &Response{body: []byte("replacement")}
+	t.Run("directory target", func(t *testing.T) {
+		dir := t.TempDir()
+
+		err := resp.Save(dir)
+
+		require.Error(t, err)
+		info, statErr := os.Stat(dir)
+		require.NoError(t, statErr)
+		assert.True(t, info.IsDir())
+	})
+
+	t.Run("non-directory parent", func(t *testing.T) {
+		parent := filepath.Join(t.TempDir(), "existing.txt")
+		require.NoError(t, os.WriteFile(parent, []byte("original"), 0o600))
+
+		err := resp.Save(filepath.Join(parent, "child.txt"))
+
+		require.Error(t, err)
+		got, readErr := os.ReadFile(parent)
+		require.NoError(t, readErr)
+		assert.Equal(t, "original", string(got))
+	})
+}
+
 func TestResponseSaveRejectsUnsupportedDestination(t *testing.T) {
 	resp := &Response{body: []byte("body")}
 
