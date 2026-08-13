@@ -77,21 +77,22 @@ func (b *RequestBuilder) do(ctx context.Context, req *http.Request, snap *client
 			var err error
 			attempts++
 			resp, err = snap.httpClient.Do(req)
+			diagnosticErr := sanitizeURLDiagnosticError(err)
 
 			if err != nil {
-				errs = append(errs, fmt.Errorf("attempt %d/%d: %w", attempt+1, retry.Max+1, err))
+				errs = append(errs, fmt.Errorf("attempt %d/%d: %w", attempt+1, retry.Max+1, diagnosticErr))
 			}
 
 			shouldRetry := retry.ShouldRetry(req, resp, err)
 			if !shouldRetry || attempt == retry.Max {
 				if err != nil {
 					if snap.logger != nil {
-						snap.logger.Errorf("Error after %d attempts: %v", attempt+1, err)
+						snap.logger.Errorf("Error after %d attempts: %v", attempt+1, diagnosticErr)
 					}
 					if len(errs) > 1 {
 						return resp, errors.Join(errs...)
 					}
-					return resp, err
+					return resp, diagnosticErr
 				}
 				break
 			}
@@ -101,7 +102,7 @@ func (b *RequestBuilder) do(ctx context.Context, req *http.Request, snap *client
 					snap.logger.Warnf("request body cannot be replayed; failing retry after attempt %d", attempt+1)
 				}
 				if err != nil {
-					return resp, errors.Join(err, ErrRequestBodyNotReplayable)
+					return resp, errors.Join(diagnosticErr, ErrRequestBodyNotReplayable)
 				}
 				return resp, ErrRequestBodyNotReplayable
 			}
@@ -262,6 +263,7 @@ func (b *RequestBuilder) prepareRequest(ctx context.Context) (*http.Request, cli
 
 	parsedURL, err := resolveRequestURL(snap.baseURL, b.preparePath(), b.queries)
 	if err != nil {
+		err = sanitizeURLDiagnosticError(err)
 		if snap.logger != nil {
 			snap.logger.Errorf("Error parsing URL: %v", err)
 		}
@@ -269,6 +271,7 @@ func (b *RequestBuilder) prepareRequest(ctx context.Context) (*http.Request, cli
 	}
 
 	if _, err := http.NewRequestWithContext(ctx, b.method, parsedURL.String(), nil); err != nil {
+		err = sanitizeURLDiagnosticError(err)
 		if snap.logger != nil {
 			snap.logger.Errorf("Error creating request: %v", err)
 		}
@@ -292,6 +295,7 @@ func (b *RequestBuilder) prepareRequest(ctx context.Context) (*http.Request, cli
 
 	req, err := http.NewRequestWithContext(ctx, b.method, parsedURL.String(), preparedBody.body)
 	if err != nil {
+		err = sanitizeURLDiagnosticError(err)
 		cancelOnError()
 		if snap.logger != nil {
 			snap.logger.Errorf("Error creating request: %v", err)

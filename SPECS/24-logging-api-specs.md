@@ -42,6 +42,8 @@ implementations only provide the four emission methods.
 - Logging is opt-in. If no logger is configured, the package performs no logging.
 - Log messages are operational diagnostics, not a stable parsing interface.
 - File-loading helpers and retry paths may log failures or retry events when a logger is configured.
+- URL-bearing construction, preflight, and transport diagnostics omit URL
+  userinfo, query values, and fragments.
 
 ## Forbidden
 

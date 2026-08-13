@@ -82,9 +82,7 @@ func (p profile) configure(c *requests.Client) error {
 	switch current := client.Transport.(type) {
 	case nil:
 		transport = &http.Transport{}
-		if err := requests.WithTransport(transport)(c); err != nil {
-			return err
-		}
+		client.Transport = transport
 	case *http.Transport:
 		transport = current
 	default:

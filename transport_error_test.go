@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -32,6 +33,19 @@ type transportErrorObservation struct {
 	defaultRetryEligible bool
 }
 
+type classifiedTransportError struct {
+	err    error
+	target error
+}
+
+func (e *classifiedTransportError) Error() string   { return "classified transport: " + e.err.Error() }
+func (e *classifiedTransportError) Unwrap() error   { return e.err }
+func (e *classifiedTransportError) Timeout() bool   { return true }
+func (e *classifiedTransportError) Temporary() bool { return false }
+func (e *classifiedTransportError) Is(target error) bool {
+	return target == e.target
+}
+
 func observeTransportError(err, cause error) transportErrorObservation {
 	var urlErr *url.Error
 	var dnsErr *net.DNSError
@@ -55,9 +69,10 @@ func observeTransportError(err, cause error) transportErrorObservation {
 
 func TestPublicSendTransportErrorClassification(t *testing.T) {
 	tests := []struct {
-		name string
-		run  func(*testing.T) (error, error)
-		want transportErrorObservation
+		name             string
+		run              func(*testing.T) (error, error)
+		want             transportErrorObservation
+		sensitiveMarkers []string
 	}{
 		{
 			name: "DNS resolution",
@@ -239,6 +254,167 @@ func TestPublicSendTransportErrorClassification(t *testing.T) {
 				defaultRetryEligible: true,
 			},
 		},
+		{
+			name: "URL diagnostic redaction",
+			run: func(t *testing.T) (error, error) {
+				cause := errors.New("local dial failure")
+				client := newTestClient(t,
+					WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+						return nil, &url.Error{
+							Op:  "round trip",
+							URL: req.URL.String(),
+							Err: &net.OpError{Op: "dial", Net: "tcp", Err: cause},
+						}
+					})),
+					WithRetry(RetryPolicy{ShouldRetry: func(_ *http.Request, _ *http.Response, err error) bool {
+						assert.ErrorIs(t, err, cause)
+						assert.Contains(t, err.Error(), "transport-query-marker")
+						assert.Contains(t, err.Error(), "transport-fragment-marker")
+						return false
+					}}),
+				)
+				_, err := client.Get("https://transport-user-marker:transport-password-marker@example.com/resource?token=transport-query-marker#transport-fragment-marker").Send(t.Context())
+				return err, cause
+			},
+			want: transportErrorObservation{
+				isCause:              true,
+				asURLError:           true,
+				asOpError:            true,
+				isConnectionError:    true,
+				defaultRetryEligible: true,
+			},
+			sensitiveMarkers: []string{
+				"transport-user-marker",
+				"transport-password-marker",
+				"transport-query-marker",
+				"transport-fragment-marker",
+			},
+		},
+		{
+			name: "wrapped URL diagnostic redaction",
+			run: func(t *testing.T) (error, error) {
+				cause := errors.New("local dial failure")
+				client := newTestClient(t,
+					WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+						urlErr := &url.Error{
+							Op:  "round trip",
+							URL: req.URL.String(),
+							Err: &net.OpError{Op: "dial", Net: "tcp", Err: cause},
+						}
+						return nil, fmt.Errorf("transport wrapper for %s: %w", req.URL.String(), urlErr)
+					})),
+					WithRetry(RetryPolicy{ShouldRetry: func(_ *http.Request, _ *http.Response, err error) bool {
+						assert.ErrorIs(t, err, cause)
+						assert.Contains(t, err.Error(), "wrapped-query-marker")
+						return false
+					}}),
+				)
+				_, err := client.Get("https://wrapped-user-marker:wrapped-password-marker@example.com/resource?token=wrapped-query-marker#wrapped-fragment-marker").Send(t.Context())
+				return err, cause
+			},
+			want: transportErrorObservation{
+				isCause:              true,
+				asURLError:           true,
+				asOpError:            true,
+				isConnectionError:    true,
+				defaultRetryEligible: true,
+			},
+			sensitiveMarkers: []string{
+				"wrapped-user-marker",
+				"wrapped-password-marker",
+				"wrapped-query-marker",
+				"wrapped-fragment-marker",
+			},
+		},
+		{
+			name: "wrapper classifications survive URL diagnostic redaction",
+			run: func(t *testing.T) (error, error) {
+				cause := errors.New("classified transport cause")
+				classification := errors.New("classified transport marker")
+				client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					return nil, &classifiedTransportError{
+						err: &url.Error{
+							Op:  "round trip",
+							URL: req.URL.String(),
+							Err: cause,
+						},
+						target: classification,
+					}
+				})))
+				_, err := client.Get("https://classified-user-marker:classified-password-marker@example.com/resource?token=classified-query-marker#classified-fragment-marker").Send(t.Context())
+				assert.ErrorIs(t, err, classification)
+				return err, cause
+			},
+			want: transportErrorObservation{
+				isCause:              true,
+				asURLError:           true,
+				isTimeout:            true,
+				defaultRetryEligible: true,
+			},
+			sensitiveMarkers: []string{
+				"classified-user-marker",
+				"classified-password-marker",
+				"classified-query-marker",
+				"classified-fragment-marker",
+			},
+		},
+		{
+			name: "joined URL diagnostic redaction",
+			run: func(t *testing.T) (error, error) {
+				cause := errors.New("joined secondary failure")
+				client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					urlErr := &url.Error{
+						Op:  "round trip",
+						URL: req.URL.String(),
+						Err: &net.OpError{Op: "dial", Net: "tcp", Err: assert.AnError},
+					}
+					return nil, errors.Join(cause, urlErr)
+				})))
+				_, err := client.Get("https://joined-user-marker:joined-password-marker@example.com/resource?token=joined-query-marker#joined-fragment-marker").Send(t.Context())
+				return err, cause
+			},
+			want: transportErrorObservation{
+				isCause:              true,
+				asURLError:           true,
+				asOpError:            true,
+				isConnectionError:    true,
+				defaultRetryEligible: true,
+			},
+			sensitiveMarkers: []string{
+				"joined-user-marker",
+				"joined-password-marker",
+				"joined-query-marker",
+				"joined-fragment-marker",
+			},
+		},
+		{
+			name: "stream URL diagnostic redaction",
+			run: func(t *testing.T) (error, error) {
+				cause := errors.New("local dial failure")
+				client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					return nil, &url.Error{
+						Op:  "round trip",
+						URL: req.URL.String(),
+						Err: &net.OpError{Op: "dial", Net: "tcp", Err: cause},
+					}
+				})))
+				_, err := client.Get("https://transport-user-marker:transport-password-marker@example.com/resource?token=transport-query-marker#transport-fragment-marker").SendStream(t.Context())
+				return err, cause
+			},
+			want: transportErrorObservation{
+				isCause:              true,
+				asURLError:           true,
+				asOpError:            true,
+				isConnectionError:    true,
+				defaultRetryEligible: true,
+			},
+			sensitiveMarkers: []string{
+				"transport-user-marker",
+				"transport-password-marker",
+				"transport-query-marker",
+				"transport-fragment-marker",
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -247,6 +423,15 @@ func TestPublicSendTransportErrorClassification(t *testing.T) {
 			require.Error(t, err)
 			got := observeTransportError(err, cause)
 			assert.Equalf(t, test.want, got, "error=%T %v", err, err)
+			if len(test.sensitiveMarkers) > 0 {
+				var urlErr *url.Error
+				require.True(t, errors.As(err, &urlErr))
+				assert.Contains(t, urlErr.URL, "example.com/resource")
+				for _, marker := range test.sensitiveMarkers {
+					assert.NotContains(t, err.Error(), marker)
+					assert.NotContains(t, urlErr.URL, marker)
+				}
+			}
 		})
 	}
 }

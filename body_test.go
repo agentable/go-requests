@@ -2,10 +2,14 @@ package requests
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,6 +29,100 @@ func TestPrepareBodyWithFormFields(t *testing.T) {
 	data, err := io.ReadAll(body.body)
 	require.NoError(t, err)
 	assert.Equal(t, url.Values{"name": {"Jane Doe"}, "age": {"32"}}.Encode(), string(data))
+}
+
+func TestMultipartExplicitContentTypeReachesTransport(t *testing.T) {
+	client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		assert.Equal(t, "application/vnd.example.upload", req.Header.Get("Content-Type"))
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Header:     http.Header{},
+			Body:       http.NoBody,
+			Request:    req,
+		}, nil
+	})))
+
+	resp, err := client.Post("https://example.test/").
+		Multipart(NewMultipart().Field("name", "value")).
+		ContentType("application/vnd.example.upload").
+		Send(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode())
+}
+
+func TestReplayableMultipartReadFailurePreventsDispatch(t *testing.T) {
+	readErr := errors.New("multipart source failed")
+	var transportCalls atomic.Int32
+	client := newTestClient(t, WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+		transportCalls.Add(1)
+		return nil, fmt.Errorf("unexpected transport call")
+	})))
+	body := NewMultipart().
+		File("upload", "payload.txt", io.MultiReader(strings.NewReader("prefix"), errorReader{err: readErr})).
+		Replayable(1024)
+
+	resp, err := client.Post("https://example.test/").Multipart(body).Send(t.Context())
+
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, readErr)
+	assert.Zero(t, transportCalls.Load())
+}
+
+type errorReader struct {
+	err error
+}
+
+func (r errorReader) Read([]byte) (int, error) { return 0, r.err }
+
+type rejectingEncoder struct {
+	err error
+}
+
+func (e rejectingEncoder) Encode(any) (io.Reader, error) { return nil, e.err }
+func (rejectingEncoder) ContentType() string             { return "application/json" }
+
+func TestBodyPreparationFailuresPreventDispatch(t *testing.T) {
+	encodeErr := errors.New("encode rejected")
+	tests := []struct {
+		name    string
+		options []Option
+		build   func(*Client) *RequestBuilder
+		wantErr error
+	}{
+		{
+			name:    "encoder rejection",
+			options: []Option{WithJSONEncoder(rejectingEncoder{err: encodeErr})},
+			build: func(client *Client) *RequestBuilder {
+				return client.Post("https://example.test/").JSON(struct{}{})
+			},
+			wantErr: encodeErr,
+		},
+		{
+			name: "removed generated content type",
+			build: func(client *Client) *RequestBuilder {
+				return client.Post("https://example.test/").JSON(struct{}{}).DelHeader("Content-Type")
+			},
+			wantErr: ErrUnsupportedContentType,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var transportCalls atomic.Int32
+			options := append(slices.Clone(test.options), WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+				transportCalls.Add(1)
+				return nil, fmt.Errorf("unexpected transport call")
+			})))
+			client := newTestClient(t, options...)
+
+			resp, err := test.build(client).Send(t.Context())
+
+			assert.Nil(t, resp)
+			assert.ErrorIs(t, err, test.wantErr)
+			assert.Zero(t, transportCalls.Load())
+		})
+	}
 }
 
 func TestBuiltInBodyGetBodyReturnsFreshReaders(t *testing.T) {

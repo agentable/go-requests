@@ -2,6 +2,7 @@ package requests
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -79,4 +80,28 @@ func TestRetryPolicyControlsTransportErrors(t *testing.T) {
 		assert.Equal(t, int32(2), attempts)
 		assert.Equal(t, 2, resp.Attempts())
 	})
+}
+
+func TestRetryRejectsNonReplayableBodyAfterTransportError(t *testing.T) {
+	transportErr := errors.New("delivery failed")
+	client := newTestClient(t,
+		WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return nil, transportErr
+		})),
+		WithRetry(RetryPolicy{
+			Max:     1,
+			Backoff: DefaultBackoffStrategy(0),
+			ShouldRetry: func(*http.Request, *http.Response, error) bool {
+				return true
+			},
+		}),
+	)
+
+	resp, err := client.Post("https://example.test/").
+		Reader(io.LimitReader(strings.NewReader("payload"), 7), "text/plain").
+		Send(t.Context())
+
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, transportErr)
+	assert.ErrorIs(t, err, ErrRequestBodyNotReplayable)
 }

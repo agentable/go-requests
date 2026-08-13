@@ -542,6 +542,10 @@ response-header timeouts match `IsTimeout`. Joined retry errors preserve these
 [`errors.go`](errors.go) cover non-transport causes (body replay, redirects,
 decoding, config).
 
+URL-bearing construction, preflight, and transport errors omit URL userinfo,
+query values, and fragments from returned and logged diagnostics. Wrapped
+causes and the classifications above remain available through the error chain.
+
 ### Inspect diagnostics
 
 ```go

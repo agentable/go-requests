@@ -156,6 +156,65 @@ func TestConfigureTransportRejectsNilTransport(t *testing.T) {
 	require.True(t, errors.Is(err, requests.ErrInvalidConfigValue))
 }
 
+func TestConfigureTransportRejectsEmptyHelloID(t *testing.T) {
+	err := ConfigureTransport(&http.Transport{}, utls.ClientHelloID{})
+
+	require.True(t, errors.Is(err, requests.ErrInvalidConfigValue))
+}
+
+func TestConfigureTransportCompletesTLSHandshake(t *testing.T) {
+	serverName := make(chan string, 1)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	server.TLS = &tls.Config{
+		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			serverName <- hello.ServerName
+			return nil, nil
+		},
+	}
+	server.StartTLS()
+	defer server.Close()
+
+	dialer := &net.Dialer{}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, server.Listener.Addr().String())
+		},
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+			ClientSessionCache: tls.NewLRUClientSessionCache(1),
+		},
+	}
+	require.NoError(t, ConfigureTransport(transport, utls.HelloChrome_Auto))
+
+	client := &http.Client{Transport: transport}
+	_, port, err := net.SplitHostPort(server.Listener.Addr().String())
+	require.NoError(t, err)
+	resp, err := client.Get("https://localhost:" + port)
+	require.NoError(t, err)
+	defer resp.Body.Close() //nolint:errcheck // test cleanup closes response body
+
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+	require.Equal(t, "localhost", <-serverName)
+}
+
+func TestConfigureTransportUsesDefaultDialer(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	require.NoError(t, ConfigureTransport(transport, utls.HelloChrome_Auto))
+
+	client := &http.Client{Transport: transport}
+	resp, err := client.Get(server.URL)
+	require.NoError(t, err)
+	defer resp.Body.Close() //nolint:errcheck // test cleanup closes response body
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+}
+
 func TestFirefoxProfileName(t *testing.T) {
 	profile := Firefox()
 
@@ -197,6 +256,12 @@ func TestCustomProfileNameDefaultsToHelloID(t *testing.T) {
 	require.True(t, strings.HasPrefix(profile.Name(), "Chrome-"))
 }
 
+func TestCustomEmptyHelloIDUsesTLSFallbackName(t *testing.T) {
+	profile := Custom("", utls.ClientHelloID{})
+
+	require.Equal(t, "TLS", profile.Name())
+}
+
 func TestCustomProfileRejectsEmptyHelloID(t *testing.T) {
 	client, err := requests.New(requests.WithProfile(Custom("empty", utls.ClientHelloID{})))
 
@@ -229,6 +294,19 @@ func TestProfileWithTLSConfigConfiguresTransport(t *testing.T) {
 	require.Contains(t, transport.TLSClientConfig.NextProtos, "acme-tls/1")
 	require.True(t, transport.ForceAttemptHTTP2)
 	require.NotNil(t, transport.DialTLSContext)
+}
+
+func TestProfileWithNilTLSConfigClearsEarlierProfileTLSOption(t *testing.T) {
+	profile := Chrome(
+		WithTLSConfig(&tls.Config{ServerName: "ignored.example.com"}),
+		WithTLSConfig(nil),
+	)
+	client, err := requests.New(requests.WithProfile(profile))
+	require.NoError(t, err)
+
+	transport, ok := client.UnsafeHTTPClient().Transport.(*http.Transport)
+	require.True(t, ok)
+	require.Empty(t, transport.TLSClientConfig.ServerName)
 }
 
 func TestConfigureTransportUsesTLSConfigForHandshake(t *testing.T) {

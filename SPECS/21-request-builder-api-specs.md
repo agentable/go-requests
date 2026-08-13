@@ -178,6 +178,10 @@ before streaming producers start. URL-resolution and retained preparation
 errors have the same no-open guarantee. The library does not read or close a
 caller body source on these preflight failures.
 
+URL preflight and terminal transport errors omit URL userinfo, query values,
+and fragments from returned and logged diagnostics. Their wrapped causes and
+standard `errors.Is` / `errors.As` classifications remain inspectable.
+
 `SendStream(ctx)` follows the same preparation and delivery path, but returns a `StreamResponse` without buffering the response body. The caller must close the stream response.
 
 Client mutations after `Send` starts do not affect that in-flight request.

@@ -1,8 +1,10 @@
 package requests
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -39,13 +41,22 @@ func TestWithProxyValidProxy(t *testing.T) {
 // TestWithProxyInvalidProxy tests handling of invalid proxy URLs.
 func TestWithProxyInvalidProxy(t *testing.T) {
 	t.Run("malformed URL does not disclose credentials", func(t *testing.T) {
-		client, err := New(WithProxy("http://alice:secret@%zz"))
+		markers := []string{"proxy-user-marker", "proxy-password-marker", "proxy-query-marker", "proxy-fragment-marker"}
+		proxyURL := "http://proxy-user-marker:proxy-password-marker@%zz/path?token=proxy-query-marker#proxy-fragment-marker"
+
+		client, err := New(WithProxy(proxyURL))
 
 		require.Error(t, err)
 		assert.Nil(t, client)
 		assert.ErrorIs(t, err, ErrInvalidConfigValue)
-		assert.NotContains(t, err.Error(), "alice")
-		assert.NotContains(t, err.Error(), "secret")
+		var urlErr *url.Error
+		require.True(t, errors.As(err, &urlErr))
+		var escapeErr url.EscapeError
+		assert.True(t, errors.As(err, &escapeErr))
+		for _, marker := range markers {
+			assert.NotContains(t, err.Error(), marker)
+			assert.NotContains(t, urlErr.URL, marker)
+		}
 	})
 
 	for _, proxyURL := range []string{"http:", "http:///path"} {

@@ -20,6 +20,10 @@ proxy URLs, profile option errors, and file-loading failures from certificate
 options fail during construction or cloning. A caller that receives a non-nil
 `*Client` receives a validated client.
 
+Construction errors that carry a URL omit userinfo, query values, and
+fragments from their diagnostic text while preserving standard wrapped causes
+and package error classification.
+
 Invalid or typed-nil auth, nil middleware, nil or typed-nil cookie jars,
 empty/nil redirect policies, and PEM input containing no certificates also fail
 construction with `ErrInvalidConfigValue`. Validation happens before values are

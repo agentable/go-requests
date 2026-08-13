@@ -13,9 +13,6 @@ import (
 )
 
 func cloneHTTPClient(client *http.Client, tlsConfig *tls.Config) *http.Client {
-	if client == nil {
-		return &http.Client{}
-	}
 	clone := *client
 	if transport, ok := client.Transport.(*http.Transport); ok {
 		clonedTransport := transport.Clone()
@@ -68,9 +65,6 @@ func (c *Client) configureHTTP2() error {
 }
 
 func (c *Client) enableHTTP2Locked() error {
-	if c.httpClient == nil {
-		c.httpClient = &http.Client{}
-	}
 	transport, err := c.ensureTransport()
 	if err != nil {
 		return err
@@ -82,9 +76,6 @@ func (c *Client) enableHTTP2Locked() error {
 }
 
 func configureHTTP2Transport(transport *http.Transport) error {
-	if transport == nil {
-		return nil
-	}
 	if isHTTP2Configured(transport) {
 		ensureHTTP2NextProtos(transport)
 		transport.ForceAttemptHTTP2 = true
@@ -96,9 +87,6 @@ func configureHTTP2Transport(transport *http.Transport) error {
 }
 
 func isHTTP2Configured(transport *http.Transport) bool {
-	if transport == nil {
-		return false
-	}
 	if transport.Protocols != nil && transport.Protocols.HTTP2() {
 		return true
 	}

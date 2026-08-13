@@ -1,7 +1,9 @@
 package requests
 
 import (
+	"errors"
 	"maps"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -30,6 +32,115 @@ type RequestBuilder struct {
 	hasRetryPolicy       bool
 	auth                 AuthMethod
 	preparationErr       error
+}
+
+func sanitizeURLDiagnosticError(err error) error {
+	_, sanitized := sanitizeURLDiagnosticErrorTree(err)
+	return sanitized
+}
+
+func sanitizeURLDiagnosticErrorTree(err error) (bool, error) {
+	if err == nil {
+		return false, nil
+	}
+
+	switch wrapped := err.(type) { //nolint:errorlint // The concrete wrappers must be cloned, not merely located.
+	case *url.Error:
+		if wrapped == nil {
+			return false, err
+		}
+		clone := *wrapped
+		clone.URL = sanitizeDiagnosticURL(wrapped.URL)
+		_, clone.Err = sanitizeURLDiagnosticErrorTree(wrapped.Err)
+		return true, &clone
+	case *net.OpError:
+		if wrapped == nil {
+			return false, err
+		}
+		changed, cause := sanitizeURLDiagnosticErrorTree(wrapped.Err)
+		if !changed {
+			return false, err
+		}
+		clone := *wrapped
+		clone.Err = cause
+		return true, &clone
+	case interface{ Unwrap() []error }:
+		causes := wrapped.Unwrap()
+		sanitized := make([]error, len(causes))
+		for i, cause := range causes {
+			changed, child := sanitizeURLDiagnosticErrorTree(cause)
+			sanitized[i] = child
+			if changed {
+				for j := i + 1; j < len(causes); j++ {
+					_, sanitized[j] = sanitizeURLDiagnosticErrorTree(causes[j])
+				}
+				return true, errors.Join(sanitized...)
+			}
+		}
+		return false, err
+	case interface{ Unwrap() error }:
+		cause := wrapped.Unwrap()
+		changed, sanitized := sanitizeURLDiagnosticErrorTree(cause)
+		if !changed {
+			return false, err
+		}
+		diagnosticErr := &sanitizedDiagnosticError{err: sanitized, original: err}
+		if netErr, ok := err.(net.Error); ok {
+			return true, &sanitizedDiagnosticNetError{sanitizedDiagnosticError: diagnosticErr, original: netErr}
+		}
+		if _, ok := err.(isError); ok {
+			return true, diagnosticErr
+		}
+		return true, sanitized
+	default:
+		return false, err
+	}
+}
+
+type sanitizedDiagnosticError struct {
+	err      error
+	original error
+}
+
+type isError interface {
+	Is(error) bool
+}
+
+func (e *sanitizedDiagnosticError) Error() string {
+	return e.err.Error()
+}
+
+func (e *sanitizedDiagnosticError) Unwrap() error {
+	return e.err
+}
+
+func (e *sanitizedDiagnosticError) Is(target error) bool {
+	original, ok := e.original.(isError)
+	return ok && original.Is(target)
+}
+
+type sanitizedDiagnosticNetError struct {
+	*sanitizedDiagnosticError
+	original net.Error
+}
+
+func (e *sanitizedDiagnosticNetError) Timeout() bool {
+	return e.original.Timeout()
+}
+
+func sanitizeDiagnosticURL(rawURL string) string {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return "<redacted>"
+	}
+
+	clone := *parsedURL
+	clone.User = nil
+	clone.RawQuery = ""
+	clone.ForceQuery = false
+	clone.Fragment = ""
+	clone.RawFragment = ""
+	return clone.String()
 }
 
 // NewRequestBuilder creates a new RequestBuilder with default settings.
@@ -359,9 +470,7 @@ func (b *RequestBuilder) Auth(auth AuthMethod) *RequestBuilder {
 func (b *RequestBuilder) applyAuthAndHeaders(req *http.Request, snap *clientSnapshot) {
 	addHeaderValues(req.Header, snap.headers, snap.orderedHeaders)
 	for _, cookie := range snap.cookies {
-		if cookie != nil {
-			req.AddCookie(cookie)
-		}
+		req.AddCookie(cookie)
 	}
 	clientCookies := req.Cookies()
 	if snap.auth != nil {

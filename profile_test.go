@@ -13,6 +13,14 @@ type testProfile struct {
 	err  error
 }
 
+type nilOptionProfile struct{}
+
+func (nilOptionProfile) Name() string { return "nil-option" }
+
+func (nilOptionProfile) Options() []Option {
+	return []Option{nil, WithBaseURL("https://profile.example")}
+}
+
 func (p testProfile) Name() string {
 	return p.name
 }
@@ -64,6 +72,17 @@ func TestWithProfileRejectsNilProfile(t *testing.T) {
 			assert.ErrorIs(t, err, ErrInvalidConfigValue)
 		})
 	}
+}
+
+func TestNilOptionsComposeAcrossConstructionAndProfiles(t *testing.T) {
+	client, err := New(nil, WithProfile(nilOptionProfile{}))
+	require.NoError(t, err)
+	assert.Equal(t, "https://profile.example", client.GetBaseURL())
+
+	clone, err := client.Clone(nil, WithBaseURL("https://clone.example"))
+	require.NoError(t, err)
+	assert.Equal(t, "https://profile.example", client.GetBaseURL())
+	assert.Equal(t, "https://clone.example", clone.GetBaseURL())
 }
 
 func TestEnableHTTP2(t *testing.T) {

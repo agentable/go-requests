@@ -144,9 +144,6 @@ func cloneCookies(cookies []*http.Cookie) []*http.Cookie {
 	}
 	clones := make([]*http.Cookie, len(cookies))
 	for i, cookie := range cookies {
-		if cookie == nil {
-			continue
-		}
 		clone := new(*cookie) //nolint:gosec // clone preserves caller-provided cookie attributes
 		clone.Unparsed = slices.Clone(cookie.Unparsed)
 		clones[i] = clone
@@ -251,10 +248,6 @@ func (c *Client) enableSession() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.httpClient == nil {
-		c.httpClient = &http.Client{}
-	}
-
 	jar := c.httpClient.Jar
 	if jar == nil {
 		var err error
@@ -302,9 +295,6 @@ func (c *Client) snapshot() clientSnapshot {
 
 	cookies := make([]*http.Cookie, len(c.cookies))
 	for i, cookie := range c.cookies {
-		if cookie == nil {
-			continue
-		}
 		clone := new(*cookie) //nolint:gosec // snapshot preserves caller-provided cookie attributes
 		clone.Unparsed = slices.Clone(cookie.Unparsed)
 		cookies[i] = clone

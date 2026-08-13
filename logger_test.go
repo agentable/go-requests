@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -106,4 +107,48 @@ func TestRetryLogMessage(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "Expected retry log message was not recorded")
+}
+
+func TestLoggerURLDiagnosticRedaction(t *testing.T) {
+	tests := []struct {
+		name    string
+		markers []string
+		run     func(*mockLogger) error
+	}{
+		{
+			name:    "preflight",
+			markers: []string{"log-path-user-marker", "log-path-password-marker", "log-path-query-marker", "log-path-fragment-marker"},
+			run: func(logger *mockLogger) error {
+				client := newTestClient(t, WithLogger(logger))
+				_, err := client.Get("https://log-path-user-marker:log-path-password-marker@example.com/%zz?token=log-path-query-marker#log-path-fragment-marker").Send(t.Context())
+				return err
+			},
+		},
+		{
+			name:    "transport",
+			markers: []string{"log-transport-user-marker", "log-transport-password-marker", "log-transport-query-marker", "log-transport-fragment-marker"},
+			run: func(logger *mockLogger) error {
+				client := newTestClient(t,
+					WithLogger(logger),
+					WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+						return nil, fmt.Errorf("transport wrapper: %w", &url.Error{Op: "round trip", URL: req.URL.String(), Err: assert.AnError})
+					})),
+				)
+				_, err := client.Get("https://log-transport-user-marker:log-transport-password-marker@example.com/resource?token=log-transport-query-marker#log-transport-fragment-marker").Send(t.Context())
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			logger := &mockLogger{}
+			require.Error(t, test.run(logger))
+			require.NotEmpty(t, logger.Errors)
+			records := strings.Join(logger.Errors, "\n")
+			for _, marker := range test.markers {
+				assert.NotContains(t, records, marker)
+			}
+		})
+	}
 }

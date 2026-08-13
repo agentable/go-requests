@@ -111,6 +111,106 @@ func TestMiddlewareShortCircuitClosesStreamingMultipartBody(t *testing.T) {
 	}
 }
 
+func TestMiddlewareShortCircuitSendStreamCleanup(t *testing.T) {
+	middlewareErr := errors.New("middleware stopped stream delivery")
+	tests := []struct {
+		name               string
+		result             func(*http.Request, chan<- struct{}) (*http.Response, error)
+		wantErr            error
+		wantResponseClosed bool
+	}{
+		{
+			name: "response",
+			result: func(req *http.Request, closed chan<- struct{}) (*http.Response, error) {
+				return &http.Response{
+					Status:     "200 OK",
+					StatusCode: http.StatusOK,
+					Header:     http.Header{},
+					Body: &closeSignalBody{
+						ReadCloser: io.NopCloser(strings.NewReader("first\nsecond\n")),
+						closed:     closed,
+					},
+					Request: req,
+				}, nil
+			},
+			wantResponseClosed: true,
+		},
+		{
+			name: "partial response and error",
+			result: func(req *http.Request, closed chan<- struct{}) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusBadGateway,
+					Header:     http.Header{},
+					Body:       &closeSignalBody{ReadCloser: http.NoBody, closed: closed},
+					Request:    req,
+				}, middlewareErr
+			},
+			wantErr:            middlewareErr,
+			wantResponseClosed: true,
+		},
+		{
+			name: "nil response",
+			result: func(*http.Request, chan<- struct{}) (*http.Response, error) {
+				return nil, nil
+			},
+			wantErr: ErrResponseNil,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				requestBodyClosed := make(chan struct{}, 1)
+				responseBodyClosed := make(chan struct{}, 1)
+				logger := &mockLogger{}
+				client := newTestClient(t,
+					WithLogger(logger),
+					WithMiddleware(func(MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+						return func(req *http.Request) (*http.Response, error) {
+							req.Body = &closeSignalBody{ReadCloser: req.Body, closed: requestBodyClosed}
+							return test.result(req, responseBodyClosed)
+						}
+					}),
+				)
+
+				resp, err := client.Post("https://example.com").
+					Timeout(time.Second).
+					Multipart(NewMultipart().FileString("upload", "payload.txt", "payload")).
+					SendStream(t.Context())
+				if test.wantErr != nil {
+					assert.Nil(t, resp)
+					assert.ErrorIs(t, err, test.wantErr)
+					require.NotEmpty(t, logger.Errors)
+				} else {
+					require.NoError(t, err)
+					var lines int
+					for line, lineErr := range resp.Lines() {
+						require.NoError(t, lineErr)
+						assert.Equal(t, "first", string(line))
+						lines++
+						break
+					}
+					assert.Equal(t, 1, lines)
+					require.NoError(t, resp.Close())
+				}
+
+				select {
+				case <-requestBodyClosed:
+				default:
+					t.Fatal("middleware short circuit did not close the undelivered request body")
+				}
+				select {
+				case <-responseBodyClosed:
+					assert.True(t, test.wantResponseClosed)
+				default:
+					assert.False(t, test.wantResponseClosed)
+				}
+				synctest.Wait()
+			})
+		})
+	}
+}
+
 func TestOrderedHeadersAttachMetadataAndApplyHeaders(t *testing.T) {
 	headers := orderedobject.New[[]string]().
 		Set("X-First", []string{"1"}).
@@ -288,6 +388,7 @@ func TestOrderedHeadersStaySyncedWithHeaderHelpers(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, []string{"2", "3"}, r.Header.Values("X-First"))
 		assert.Equal(t, "4", r.Header.Get("X-Added"))
+		assert.Equal(t, []string{"5", "6"}, r.Header.Values("X-Bulk"))
 		assert.Empty(t, r.Header.Get("X-Delete"))
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 		assert.Equal(t, "application/json", r.Header.Get("Accept"))
@@ -305,6 +406,7 @@ func TestOrderedHeadersStaySyncedWithHeaderHelpers(t *testing.T) {
 			assert.Equal(t, []string{
 				"X-First",
 				"X-Added",
+				"X-Bulk",
 				"Content-Type",
 				"Accept",
 				"User-Agent",
@@ -314,6 +416,9 @@ func TestOrderedHeadersStaySyncedWithHeaderHelpers(t *testing.T) {
 			first, ok := ordered.Get("X-First")
 			require.True(t, ok)
 			assert.Equal(t, []string{"2", "3"}, first)
+			bulk, ok := ordered.Get("X-Bulk")
+			require.True(t, ok)
+			assert.Equal(t, []string{"5", "6"}, bulk)
 
 			contentType, ok := ordered.Get("Content-Type")
 			require.True(t, ok)
@@ -327,6 +432,7 @@ func TestOrderedHeadersStaySyncedWithHeaderHelpers(t *testing.T) {
 		Header("x-first", "2").
 		AddHeader("X-FIRST", "3").
 		AddHeader("X-Added", "4").
+		Headers(http.Header{"X-Bulk": {"5", "6"}}).
 		DelHeader("x-delete").
 		ContentType("text/plain").
 		Accept("application/json").
@@ -518,6 +624,24 @@ func TestSendMethodQuery(t *testing.T) {
 	}
 }
 
+func TestMethodAndPathMutationsControlDispatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPatch, r.Method)
+		assert.Equal(t, "/mutated", r.URL.Path)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+	resp, err := client.Get("/original").
+		Method(http.MethodPatch).
+		Path("/mutated").
+		Send(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode())
+}
+
 func TestSendPreservesRepeatedQueryValues(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintln(w, r.URL.RawQuery)
@@ -631,6 +755,55 @@ func TestSendInvalidResolvedURLDoesNotDispatch(t *testing.T) {
 	assert.Zero(t, atomic.LoadInt64(&source.readBytes))
 	assert.False(t, source.closed.Load())
 	assert.False(t, called.Load())
+}
+
+func TestSendURLDiagnosticRedaction(t *testing.T) {
+	tests := []struct {
+		name string
+		send func(*RequestBuilder) error
+	}{
+		{
+			name: "Send",
+			send: func(builder *RequestBuilder) error {
+				_, err := builder.Send(t.Context())
+				return err
+			},
+		},
+		{
+			name: "SendStream",
+			send: func(builder *RequestBuilder) error {
+				_, err := builder.SendStream(t.Context())
+				return err
+			},
+		},
+	}
+
+	markers := []string{"path-user-marker", "path-password-marker", "path-query-marker", "path-fragment-marker"}
+	requestURL := "https://path-user-marker:path-password-marker@example.com/%zz?token=path-query-marker#path-fragment-marker"
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var transportCalls atomic.Int64
+			client := newTestClient(t, WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+				transportCalls.Add(1)
+				return nil, assert.AnError
+			})))
+
+			err := test.send(client.Get(requestURL))
+
+			require.Error(t, err)
+			var urlErr *url.Error
+			require.True(t, errors.As(err, &urlErr))
+			var escapeErr url.EscapeError
+			assert.True(t, errors.As(err, &escapeErr))
+			assert.NotEmpty(t, urlErr.Op)
+			for _, marker := range markers {
+				assert.NotContains(t, err.Error(), marker)
+				assert.NotContains(t, urlErr.URL, marker)
+			}
+			assert.Zero(t, transportCalls.Load())
+		})
+	}
 }
 
 type testAddress struct {
@@ -1371,6 +1544,19 @@ func TestPathParameterMethods(t *testing.T) {
 	responseBody, err := io.ReadAll(resp.Raw().Body)
 	assert.NoError(t, err)
 	assert.Contains(t, string(responseBody), "Path parameters received correctly")
+}
+
+func TestDelPathParamBeforeAnyParamsIsNoOp(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/items/{id}", r.URL.Path)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, WithBaseURL(server.URL))
+	resp, err := client.Get("/items/{id}").DelPathParam("id").Send(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode())
 }
 
 func startEchoServer() *httptest.Server {

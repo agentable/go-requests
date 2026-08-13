@@ -452,6 +452,16 @@ func TestResponseDecodeJSON(t *testing.T) {
 	assert.True(t, jsonResponse.Status)
 }
 
+func TestResponseDecodeEmptyBodyIsNoOp(t *testing.T) {
+	resp := &Response{jsonDecoder: &JSONDecoder{}}
+	out := struct{ Value string }{Value: "unchanged"}
+
+	err := resp.DecodeJSON(&out)
+
+	require.NoError(t, err)
+	assert.Equal(t, "unchanged", out.Value)
+}
+
 func TestResponseDecodeUsesDispatchSnapshot(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -644,6 +654,24 @@ func TestResponseTLSReturnsCopy(t *testing.T) {
 	}
 }
 
+func TestResponseTLSDeepCopiesVerifiedChains(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, WithHTTPClient(server.Client()))
+	resp, err := client.Get(server.URL).Send(t.Context())
+	require.NoError(t, err)
+
+	state := resp.TLS()
+	require.NotNil(t, state)
+	require.NotEmpty(t, state.VerifiedChains)
+	require.NotEmpty(t, state.VerifiedChains[0])
+	state.VerifiedChains[0] = nil
+	assert.NotEmpty(t, resp.Raw().TLS.VerifiedChains[0])
+}
+
 func TestResponseSaveToFileCreatesParentDirectories(t *testing.T) {
 	t.Parallel()
 
@@ -657,6 +685,14 @@ func TestResponseSaveToFileCreatesParentDirectories(t *testing.T) {
 	savedData, err := os.ReadFile(filePath)
 	require.NoError(t, err)
 	assert.Equal(t, "Sample response body", string(savedData))
+}
+
+func TestResponseSaveRejectsUnsupportedDestination(t *testing.T) {
+	resp := &Response{body: []byte("body")}
+
+	err := resp.Save(42)
+
+	assert.ErrorIs(t, err, ErrNotSupportSaveMethod)
 }
 
 func TestResponseLines(t *testing.T) {
@@ -1019,6 +1055,27 @@ func TestBufferedResponseClosesBodyOnReadError(t *testing.T) {
 	client := newTestClient(t, WithHTTPClient(httpClient))
 
 	resp, err := client.Get("http://example.test/").MaxResponseBodyBytes(8).Send(t.Context())
+
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, ErrResponseReadFailed)
+	assert.ErrorIs(t, err, readErr)
+	assert.Equal(t, 1, body.closeCount)
+}
+
+func TestBufferedResponseLimitProbePreservesReadError(t *testing.T) {
+	readErr := errors.New("overflow probe failed")
+	body := &recordingResponseBody{data: []byte("exact"), readErr: readErr}
+	client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{},
+			Body:          body,
+			ContentLength: -1,
+			Request:       req,
+		}, nil
+	})))
+
+	resp, err := client.Get("https://example.test/").MaxResponseBodyBytes(5).Send(t.Context())
 
 	assert.Nil(t, resp)
 	assert.ErrorIs(t, err, ErrResponseReadFailed)

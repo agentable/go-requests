@@ -3,6 +3,7 @@ package requests
 import (
 	"context"
 	"crypto/tls"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -122,6 +123,23 @@ func TestHTTP2OptionsPreserveHTTPTransportSettings(t *testing.T) {
 	assertHTTP2Configured(t, transport)
 }
 
+func TestWithHTTP2CompletesExistingProtocolConfiguration(t *testing.T) {
+	protocols := new(http.Protocols)
+	protocols.SetHTTP2(true)
+	transport := &http.Transport{Protocols: protocols}
+
+	client := newTestClient(t, WithTransport(transport), WithHTTP2())
+
+	configured, ok := client.UnsafeHTTPClient().Transport.(*http.Transport)
+	require.True(t, ok)
+	assert.Same(t, transport, configured)
+	assert.True(t, configured.Protocols.HTTP2())
+	assert.True(t, configured.ForceAttemptHTTP2)
+	require.NotNil(t, configured.TLSClientConfig)
+	assert.Contains(t, configured.TLSClientConfig.NextProtos, http2.NextProtoTLS)
+	assert.Contains(t, configured.TLSClientConfig.NextProtos, "http/1.1")
+}
+
 func TestHTTP2OptionsNegotiateHTTP2(t *testing.T) {
 	t.Parallel()
 
@@ -146,6 +164,37 @@ func TestHTTP2OptionsNegotiateHTTP2(t *testing.T) {
 func TestTransportConfigNoOpWhenNoSettings(t *testing.T) {
 	client := newTestClient(t, WithBaseURL("http://example.com"))
 	assert.Nil(t, client.httpClient.Transport)
+}
+
+func TestDialContextCanRestoreDefaultDialer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t,
+		WithDialContext(func(context.Context, string, string) (net.Conn, error) {
+			return nil, assert.AnError
+		}),
+		WithDialContext(nil),
+	)
+
+	resp, err := client.Get(server.URL).Send(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode())
+}
+
+func TestTransportOptionRejectsNonstandardDefaultTransport(t *testing.T) {
+	previous := http.DefaultTransport
+	http.DefaultTransport = testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, assert.AnError
+	})
+	t.Cleanup(func() { http.DefaultTransport = previous })
+
+	client, err := New(WithDialTimeout(time.Second))
+
+	assert.Nil(t, client)
+	assert.ErrorIs(t, err, ErrInvalidTransportType)
 }
 
 func TestEnsureTransportInvalidType(t *testing.T) {

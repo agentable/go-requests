@@ -3,7 +3,6 @@ package requests
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"net/http"
 	"slices"
 )
 
@@ -37,9 +36,6 @@ func cloneByteSlices(values [][]byte) [][]byte {
 }
 
 func (c *Client) syncTLSConfigLocked() error {
-	if c.httpClient == nil {
-		c.httpClient = &http.Client{}
-	}
 	transport, err := c.ensureTransport()
 	if err != nil {
 		return err

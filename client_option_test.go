@@ -3,6 +3,7 @@ package requests
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,6 +41,26 @@ func TestNew_NoOptions(t *testing.T) {
 func TestNew_WithBaseURL(t *testing.T) {
 	c := newTestClient(t, WithBaseURL("https://api.example.com"))
 	assert.Equal(t, "https://api.example.com", c.baseURL)
+}
+
+func TestNewWithBaseURLRedactsDiagnostics(t *testing.T) {
+	markers := []string{"base-user-marker", "base-password-marker", "base-query-marker", "base-fragment-marker"}
+	baseURL := "https://base-user-marker:base-password-marker@example.com/%zz?token=base-query-marker#base-fragment-marker"
+
+	client, err := New(WithBaseURL(baseURL))
+
+	assert.Nil(t, client)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidConfigValue)
+	var urlErr *url.Error
+	require.True(t, errors.As(err, &urlErr))
+	var escapeErr url.EscapeError
+	assert.True(t, errors.As(err, &escapeErr))
+	assert.NotEmpty(t, urlErr.Op)
+	for _, marker := range markers {
+		assert.NotContains(t, err.Error(), marker)
+		assert.NotContains(t, urlErr.URL, marker)
+	}
 }
 
 func TestNew_WithTimeout(t *testing.T) {
@@ -315,6 +337,29 @@ func TestNew_WithRetry(t *testing.T) {
 	assert.NotNil(t, c.retry.ShouldRetry)
 }
 
+func TestWithoutRetryDisablesEarlierPolicy(t *testing.T) {
+	var attempts atomic.Int32
+	client := newTestClient(t,
+		WithRetry(RetryPolicy{Max: 2, Backoff: DefaultBackoffStrategy(0)}),
+		WithoutRetry(),
+		WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			attempts.Add(1)
+			return &http.Response{
+				StatusCode: http.StatusServiceUnavailable,
+				Header:     http.Header{},
+				Body:       http.NoBody,
+				Request:    req,
+			}, nil
+		})),
+	)
+
+	resp, err := client.Get("https://example.test/").Send(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode())
+	assert.Equal(t, int32(1), attempts.Load())
+}
+
 func TestNew_WithMiddleware(t *testing.T) {
 	mw := func(next MiddlewareHandlerFunc) MiddlewareHandlerFunc {
 		return func(req *http.Request) (*http.Response, error) {
@@ -551,6 +596,10 @@ func TestNew_ReturnsOptionErrors(t *testing.T) {
 		{name: "negative max conns per host", opts: []Option{WithMaxConnsPerHost(-1)}, want: ErrInvalidConfigValue},
 		{name: "nil JSON encoder", opts: []Option{WithJSONEncoder(nil)}, want: ErrInvalidConfigValue},
 		{name: "nil JSON decoder", opts: []Option{WithJSONDecoder(nil)}, want: ErrInvalidConfigValue},
+		{name: "nil XML encoder", opts: []Option{WithXMLEncoder(nil)}, want: ErrInvalidConfigValue},
+		{name: "nil XML decoder", opts: []Option{WithXMLDecoder(nil)}, want: ErrInvalidConfigValue},
+		{name: "nil YAML encoder", opts: []Option{WithYAMLEncoder(nil)}, want: ErrInvalidConfigValue},
+		{name: "nil YAML decoder", opts: []Option{WithYAMLDecoder(nil)}, want: ErrInvalidConfigValue},
 		{name: "unsupported proxy scheme", opts: []Option{WithProxy("ftp://proxy.example.com")}, want: ErrUnsupportedScheme},
 		{name: "missing client certificate files", opts: []Option{WithClientCertificate("missing-cert.pem", "missing-key.pem")}},
 		{name: "missing root certificate file", opts: []Option{WithRootCertificate("missing-root.pem")}},

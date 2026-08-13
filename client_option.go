@@ -83,7 +83,7 @@ func WithBaseURL(baseURL string) Option {
 	return func(c *Client) error {
 		if baseURL != "" {
 			if _, err := url.Parse(baseURL); err != nil {
-				return fmt.Errorf("invalid BaseURL: %w", err)
+				return fmt.Errorf("%w: BaseURL: %w", ErrInvalidConfigValue, sanitizeURLDiagnosticError(err))
 			}
 		}
 		c.setBaseURL(baseURL)
