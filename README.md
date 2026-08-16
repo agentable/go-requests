@@ -13,7 +13,7 @@ A fluent HTTP client library for Go with middleware, retries, proxy and redirect
 - **Transport controls**: Configure TLS, mTLS, HTTP/2, redirect policies, proxies, bypass rules, resolver/dialer hooks, and connection pooling.
 - **Ordered headers**: Express header order as request intent with `orderedobject`, while preserving `net/http` header semantics.
 - **Optional profiles**: Apply browser-like headers, TLS ClientHello fingerprints, or HTTP/3 through separate extension modules.
-- **`net/http` adapters**: Use configured `requests` clients as `*http.Client` or `http.RoundTripper` in other SDKs.
+- **`net/http` handoff**: Pass a caller-owned snapshot of standard client configuration to other SDKs.
 - **Response helpers**: Bound buffered responses, decode JSON/XML/YAML, inspect diagnostics, iterate lines, or save to disk without accepting truncated data.
 - **Composable middleware**: Attach header or cookie middleware at the client or request level.
 
@@ -204,11 +204,11 @@ resp, err := client.Get("/articles").
 
 Default `net/http` transports preserve header semantics. Transports that explicitly read `requests.OrderedHeaders(req)` can use the metadata for wire-order delivery.
 
-Dispatch metadata has one precedence rule across builders, `AsHTTPClient`, and
-`AsTransport`: client headers < client auth < request headers < request auth.
-Request cookies replace same-name client cookies while preserving other client
-defaults. Existing ordered entries are synchronized to the final semantic
-header values; pseudo-header intent is preserved separately.
+Fluent dispatch has one metadata precedence rule: client headers < client auth
+< request headers < request auth. Request cookies replace same-name client
+cookies while preserving other client defaults. Existing ordered entries are
+synchronized to the final semantic header values; pseudo-header intent is
+preserved separately.
 
 ### JSON request body
 
@@ -349,17 +349,32 @@ httpClient := client.AsHTTPClient()
 resp, err := httpClient.Get("https://api.example.com/resource")
 ```
 
-Use `AsTransport()` when the caller owns the `http.Client`:
+The returned client snapshots `net/http` configuration: timeout, cookie jar,
+redirect callback, and transport. A standard transport and its top-level TLS
+config are copied; custom transports, the jar, redirect callback, and values
+referenced by TLS configuration retain their identity.
+
+The snapshot does not carry the requests base URL, headers, cookies outside the
+jar, auth, ordered metadata, middleware, retries, codecs, or response helpers.
+Use fluent dispatch when those semantics are required:
 
 ```go
-httpClient := &http.Client{
-	Transport: client.AsTransport(),
-}
+resp, err := client.Get("/resource").Send(ctx)
 ```
 
-The adapter applies client headers, cookies, auth, and client middleware. It does not run request-builder retries, response buffering, stream responses, or decoding helpers.
+When an SDK accepts only `http.RoundTripper`, pass the snapshot's transport and
+let the SDK own request preparation:
 
-`UnsafeHTTPClient()` exposes the live underlying `*http.Client` only for advanced integrations that must inspect or mutate raw transport state. Prefer construction options or adapters for ordinary use.
+```go
+configured := client.AsHTTPClient()
+transport := configured.Transport
+if transport == nil {
+	transport = http.DefaultTransport
+}
+sdkClient.SetTransport(transport)
+```
+
+`UnsafeHTTPClient()` exposes the live underlying `*http.Client` only for advanced integrations that must inspect or mutate raw transport state. Prefer construction options or `AsHTTPClient` for ordinary integration.
 
 ## Session and Dialing
 
@@ -440,7 +455,8 @@ redirect method, body, Referer, Cookie, and payload-header transitions.
 when the redirect target has the same scheme, canonical hostname, and effective
 port. Authorization, proxy authorization, and explicit cookie headers are
 removed across origins; cookies supplied by the client's Jar still follow
-`net/http` domain, path, and secure rules.
+`net/http` domain, path, and secure rules. An `AsHTTPClient` snapshot preserves
+the redirect callback without reapplying requests metadata between hops.
 
 ## Responses
 

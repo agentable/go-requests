@@ -55,12 +55,11 @@ A `Client` MAY define reusable defaults for:
 - logger
 - transport and timeout settings
 
-These defaults apply with one precedence rule: client headers < client auth <
-request-local headers < request-local auth. Adapter inbound headers occupy the
-request-local header layer. Request cookies replace same-name client cookies
-while preserving other client cookie defaults. Client defaults are not mutated
-through public runtime setters; callers derive a modified client with
-`Clone(opts...)`.
+`RequestBuilder` dispatch applies these defaults. The metadata precedence and
+cookie-merge rules are owned by
+[`SPECS/21-request-builder-api-specs.md`](21-request-builder-api-specs.md).
+Client defaults are not mutated through public runtime setters; callers derive
+a modified client with `Clone(opts...)`.
 
 `WithHeaders(http.Header)` captures a clone when the option is applied. A nil
 header is an empty default set, and later mutation of the caller's map or value
@@ -162,26 +161,30 @@ port change removes Authorization, proxy authorization, and explicit cookie
 headers. Cookie Jar values remain owned by `net/http` and follow their domain,
 path, and secure scope.
 
-## `net/http` Adapters
+## `net/http` Integration
 
-`AsHTTPClient()` returns a new `*http.Client` that snapshots the current underlying timeout, cookie jar, redirect policy, and transport. Its transport applies client-level defaults: headers, cookies, auth, and client middleware.
+`AsHTTPClient()` returns a caller-owned `*http.Client` snapshot of the current
+underlying timeout, cookie jar, redirect callback, and transport. The client
+value, a standard `*http.Transport`, and its top-level `tls.Config` are copied.
+Custom transports, the cookie jar, redirect callback, and values referenced by
+TLS configuration retain their identity.
 
-`AsTransport()` returns the same configured transport wrapper for callers that already own an `*http.Client`.
+The snapshot does not apply the requests base URL, headers, cookies outside the
+jar, auth, ordered metadata, middleware, retries, codecs, response buffering,
+streaming, or decoding helpers. The receiving caller or SDK owns request
+preparation and response handling. A transport-only integration MAY pass
+`AsHTTPClient().Transport`, using `http.DefaultTransport` when it is nil; this
+carries transport configuration only.
 
-Adapter boundaries:
-
-- preserve client headers, cookies, auth, middleware, timeout, cookie jar, redirect policy, and the underlying transport
-- do not preserve `RequestBuilder` behavior such as request-local retry, response buffering, stream responses, decoding helpers, `Save`, or `Lines`
-- clone inbound `net/http` requests before applying defaults
-- apply the same header/auth and name-based cookie precedence as builders
-- do not change the meaning of `UnsafeHTTPClient`, which remains a raw mutable escape hatch
+`UnsafeHTTPClient` remains the live mutable escape hatch. It is not a snapshot,
+and callers that mutate it own synchronization and consistency risk.
 
 ## Forbidden
 
 - Do not ignore errors returned by `New`.
 - Do not add public runtime setters for client defaults; derive modified clients with `Clone(opts...)`.
 - Do not expect `*http.Transport`-specific timeout and pool options to mutate a custom non-`*http.Transport` transport.
-- Do not expect `AsHTTPClient` or `AsTransport` to run the `RequestBuilder` pipeline.
+- Do not use `AsHTTPClient` to carry requests metadata or middleware into another request owner.
 
 ## Contract Invariants
 

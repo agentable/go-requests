@@ -126,7 +126,8 @@ modules require that version.
 
 These symbols remain public because they name real integration points:
 
-- `AsHTTPClient` and `AsTransport` expose standard-library adapter shapes.
+- `AsHTTPClient` exposes a caller-owned snapshot of standard-library client
+  configuration without carrying requests metadata or middleware.
 - `UnsafeHTTPClient` exposes the underlying client for advanced integration.
   Callers that mutate it own synchronization and consistency risk.
 - `GetTLSConfig` returns a standard shallow `tls.Config.Clone` so extension
@@ -144,6 +145,8 @@ These symbols remain public because they name real integration points:
 - Do not add public runtime setters for client defaults; use `Clone(opts...)` to
   derive a modified client.
 - Do not expose mutable response internals as fields.
+- Do not add a transport adapter that reapplies requests defaults outside
+  `RequestBuilder` dispatch.
 - Do not add a public symbol unless it names a durable concept that belongs in
   the request language.
 - Do not make extension modules depend on an unpublished root version.

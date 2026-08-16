@@ -1,3 +1,6 @@
 [submodule ".agents/skills"]
 	path = .agents/skills
 	url = https://github.com/agentable/golang-skills.git
+[submodule ".references/resty"]
+	path = .references/resty
+	url = https://github.com/go-resty/resty.git

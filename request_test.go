@@ -534,6 +534,220 @@ func TestHeadersPreserveMultipleValuesWhenOverridingOrderedDefaults(t *testing.T
 	require.NoError(t, resp.Close())
 }
 
+func TestMetadataPrecedenceClientAuthOverridesClientHeader(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, []string{"Bearer client-token"}, r.Header.Values("Authorization"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t,
+		WithBaseURL(server.URL),
+		WithHTTPClient(server.Client()),
+		WithHeaders(http.Header{"Authorization": {"client-header"}}),
+		WithBearerAuth("client-token"),
+	)
+	resp, err := client.Get("/").Send(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, resp.Close())
+}
+
+func TestMetadataPrecedenceRequestHeadersOverrideClientAuth(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, []string{"request-first", "request-second"}, r.Header.Values("Authorization"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t,
+		WithBaseURL(server.URL),
+		WithHTTPClient(server.Client()),
+		WithHeaders(http.Header{"Authorization": {"client-header"}}),
+		WithBearerAuth("client-token"),
+	)
+	resp, err := client.Get("/").Headers(http.Header{
+		"authorization": {"request-first", "request-second"},
+	}).Send(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, resp.Close())
+}
+
+func TestMetadataPrecedenceRequestAuthSynchronizesOrderedAuthorization(t *testing.T) {
+	clientOrdered := orderedobject.New[[]string]().
+		Set("Authorization", []string{"client-header"}).
+		Set("X-Client", []string{"client"})
+	requestOrdered := orderedobject.New[[]string]().
+		Set(":authority", []string{"api.example.com"}).
+		Set("authorization", []string{"request-header"})
+	client := newTestClient(t,
+		WithOrderedHeaders(clientOrdered),
+		WithBearerAuth("client-token"),
+		WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			assert.Equal(t, []string{"Bearer request-token"}, req.Header.Values("Authorization"))
+			ordered, ok := OrderedHeaders(req)
+			require.True(t, ok)
+			auth, ok := ordered.Get("authorization")
+			require.True(t, ok)
+			assert.Equal(t, []string{"Bearer request-token"}, auth)
+			authority, ok := ordered.Get(":authority")
+			require.True(t, ok)
+			assert.Equal(t, []string{"api.example.com"}, authority)
+			return &http.Response{
+				Status:     "200 OK",
+				StatusCode: http.StatusOK,
+				Header:     http.Header{},
+				Body:       http.NoBody,
+				Request:    req,
+			}, nil
+		})),
+	)
+
+	resp, err := client.Get("https://example.com").
+		OrderedHeaders(requestOrdered).
+		Auth(BearerAuth{Token: "request-token"}).
+		Send(t.Context())
+
+	require.NoError(t, err)
+	require.NoError(t, resp.Close())
+}
+
+func TestMetadataPrecedenceClientAuthSynchronizesOrderedAuthorization(t *testing.T) {
+	ordered := orderedobject.New[[]string]().
+		Set(":authority", []string{"api.example.com"}).
+		Set("Authorization", []string{"client-header"})
+	client := newTestClient(t,
+		WithOrderedHeaders(ordered),
+		WithBearerAuth("client-token"),
+		WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			assert.Equal(t, []string{"Bearer client-token"}, req.Header.Values("Authorization"))
+			gotOrdered, ok := OrderedHeaders(req)
+			require.True(t, ok)
+			auth, ok := gotOrdered.Get("Authorization")
+			require.True(t, ok)
+			assert.Equal(t, []string{"Bearer client-token"}, auth)
+			authority, ok := gotOrdered.Get(":authority")
+			require.True(t, ok)
+			assert.Equal(t, []string{"api.example.com"}, authority)
+			return &http.Response{
+				Status:     "200 OK",
+				StatusCode: http.StatusOK,
+				Header:     http.Header{},
+				Body:       http.NoBody,
+				Request:    req,
+			}, nil
+		})),
+	)
+
+	resp, err := client.Get("https://example.com").Send(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, resp.Close())
+}
+
+func TestMetadataPrecedenceRequestCookiesOverrideByName(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		values := map[string]string{}
+		counts := map[string]int{}
+		for _, cookie := range r.Cookies() {
+			values[cookie.Name] = cookie.Value
+			counts[cookie.Name]++
+		}
+		assert.Equal(t, map[string]string{
+			"default": "client",
+			"shared":  "request",
+			"local":   "request",
+		}, values)
+		assert.Equal(t, 1, counts["shared"])
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t,
+		WithBaseURL(server.URL),
+		WithHTTPClient(server.Client()),
+		WithCookies(map[string]string{
+			"default": "client",
+			"shared":  "client",
+		}),
+	)
+	resp, err := client.Get("/").
+		Cookie("shared", "request").
+		Cookie("local", "request").
+		Send(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, resp.Close())
+}
+
+func TestMetadataPrecedenceSynchronizesOrderedCookies(t *testing.T) {
+	clientOrdered := orderedobject.New[[]string]().
+		Set("Cookie", []string{"default=client; shared=client"})
+	requestOrdered := orderedobject.New[[]string]().
+		Set(":authority", []string{"api.example.com"}).
+		Set("cookie", []string{"shared=request"})
+	client := newTestClient(t,
+		WithOrderedHeaders(clientOrdered),
+		WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			assert.Equal(t, []string{"default=client; shared=request; local=request"}, req.Header.Values("Cookie"))
+			ordered, ok := OrderedHeaders(req)
+			require.True(t, ok)
+			cookies, ok := ordered.Get("cookie")
+			require.True(t, ok)
+			assert.Equal(t, req.Header.Values("Cookie"), cookies)
+			authority, ok := ordered.Get(":authority")
+			require.True(t, ok)
+			assert.Equal(t, []string{"api.example.com"}, authority)
+			return &http.Response{
+				Status:     "200 OK",
+				StatusCode: http.StatusOK,
+				Header:     http.Header{},
+				Body:       http.NoBody,
+				Request:    req,
+			}, nil
+		})),
+	)
+
+	resp, err := client.Get("https://example.com").
+		OrderedHeaders(requestOrdered).
+		Cookie("local", "request").
+		Send(t.Context())
+
+	require.NoError(t, err)
+	require.NoError(t, resp.Close())
+}
+
+func TestMetadataPrecedencePreservesMiddlewareRetryCadence(t *testing.T) {
+	var middlewareCalls atomic.Int64
+	var transportCalls atomic.Int64
+	client := newTestClient(t,
+		WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+		WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			status := http.StatusInternalServerError
+			if transportCalls.Add(1) == 2 {
+				status = http.StatusOK
+			}
+			return &http.Response{
+				Status:     http.StatusText(status),
+				StatusCode: status,
+				Header:     http.Header{},
+				Body:       http.NoBody,
+				Request:    req,
+			}, nil
+		})),
+	)
+	client.addMiddleware(func(next MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+		return func(req *http.Request) (*http.Response, error) {
+			middlewareCalls.Add(1)
+			return next(req)
+		}
+	})
+
+	resp, err := client.Get("https://example.com").Send(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, resp.Attempts())
+	assert.Equal(t, int64(1), middlewareCalls.Load())
+	assert.Equal(t, int64(2), transportCalls.Load())
+}
+
 func TestRequestCancellation(t *testing.T) {
 	t.Parallel()
 

@@ -132,7 +132,7 @@ func TestNew_WithNilHeadersCanBeExtended(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, resp.StatusCode())
 }
 
-func TestNew_WithHeadersCapturesCallerValuesForAdapters(t *testing.T) {
+func TestNew_WithHeadersCapturesCallerValuesDuringDispatch(t *testing.T) {
 	var observed []string
 	transport := testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		observed = req.Header.Values("X-Snapshot")
@@ -144,12 +144,10 @@ func TestNew_WithHeadersCapturesCallerValuesForAdapters(t *testing.T) {
 	headers["X-Snapshot"][0] = "mutated"
 	headers.Add("X-Snapshot", "third")
 
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.com", nil)
-	require.NoError(t, err)
-	_, err = client.AsTransport().RoundTrip(req)
+	_, err := client.Get("https://example.com").Send(t.Context())
 	assert.ErrorIs(t, err, assert.AnError)
 	if diff := cmp.Diff([]string{"initial", "second"}, observed); diff != "" {
-		t.Errorf("adapter request headers mismatch (-want +got):\n%s", diff)
+		t.Errorf("dispatched request headers mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -167,9 +165,7 @@ func TestClientCloneOwnsIndependentHeaders(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, client := range []*Client{base, clone} {
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.com", nil)
-		require.NoError(t, err)
-		_, err = client.AsTransport().RoundTrip(req)
+		_, err = client.Get("https://example.com").Send(t.Context())
 		assert.ErrorIs(t, err, assert.AnError)
 	}
 
@@ -196,12 +192,7 @@ func TestNew_WithHeadersDoesNotRaceWithCallerMutation(t *testing.T) {
 	wg.Go(func() {
 		<-start
 		for range 1_000 {
-			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.com", nil)
-			if err != nil {
-				t.Errorf("NewRequestWithContext() error = %v", err)
-				return
-			}
-			_, _ = client.AsTransport().RoundTrip(req)
+			_, _ = client.Get("https://example.com").Send(t.Context())
 		}
 	})
 	close(start)
@@ -720,9 +711,7 @@ func TestClone_UsesConstructionValidation(t *testing.T) {
 
 	assert.Nil(t, clone)
 	assert.ErrorIs(t, err, ErrInvalidConfigValue)
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.com", nil)
-	require.NoError(t, err)
-	_, err = base.AsTransport().RoundTrip(request)
+	_, err = base.Get("https://example.com").Send(t.Context())
 	assert.ErrorIs(t, err, assert.AnError)
 	assert.Equal(t, "value", gotHeader)
 }
