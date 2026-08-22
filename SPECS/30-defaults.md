@@ -79,7 +79,7 @@ are not another spelling for the zero-retry default.
 
 | Field | Default | Source | Why |
 |---|---|---|---|
-| `JSONEncoder` / `JSONDecoder` | private client-local `JSONEncoder` / `JSONDecoder` (`go-json-experiment/json`) | `client.go: newClient` | Always populated so `JSON` / `DecodeJSON` work without ceremony. Callers can swap encoder/decoder with construction options. |
+| `JSONEncoder` / `JSONDecoder` | private client-local `JSONEncoder` / `JSONDecoder` (`encoding/json/v2`) | `client.go: newClient` | Always populated so `JSON` / `DecodeJSON` work without ceremony. Callers can swap encoder/decoder with construction options. |
 | `XMLEncoder` / `XMLDecoder` | private client-local `XMLEncoder` / `XMLDecoder` | `client.go: newClient` | Same. |
 | `YAMLEncoder` / `YAMLDecoder` | private client-local `YAMLEncoder` / `YAMLDecoder` (`goccy/go-yaml`) | `client.go: newClient` | Same. |
 

@@ -220,7 +220,7 @@ Core module dependencies:
 
 | Dependency | Purpose |
 |------------|---------|
-| `github.com/go-json-experiment/json` | JSON encoding and decoding |
+| stdlib `encoding/json/v2` and `encoding/json/jsontext` | JSON encoding and decoding |
 | `github.com/goccy/go-yaml` | YAML encoding and decoding |
 | `github.com/google/go-querystring` | Struct-to-query encoding |
 | `github.com/agentable/go-orderedobject` | Ordered header intent |

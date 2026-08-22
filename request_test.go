@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json/v2"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -18,7 +19,6 @@ import (
 	"time"
 
 	"github.com/agentable/go-orderedobject"
-	"github.com/go-json-experiment/json"
 	"github.com/stretchr/testify/assert"
 	"github.com/test-go/testify/require"
 )
