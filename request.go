@@ -134,7 +134,7 @@ func sanitizeDiagnosticURL(rawURL string) string {
 		return "<redacted>"
 	}
 
-	clone := *parsedURL
+	clone := parsedURL.Clone()
 	clone.User = nil
 	clone.RawQuery = ""
 	clone.ForceQuery = false
@@ -238,7 +238,7 @@ func resolveRequestURL(baseURL, requestPath string, queryValues url.Values) (*ur
 	if err != nil {
 		return nil, err
 	}
-	resolved := *base
+	resolved := base.Clone()
 	resolved.RawQuery = requestURL.RawQuery
 	resolved.ForceQuery = requestURL.ForceQuery
 	resolved.Fragment = requestURL.Fragment
@@ -249,8 +249,8 @@ func resolveRequestURL(baseURL, requestPath string, queryValues url.Values) (*ur
 	}
 	resolved.Path = path
 	resolved.RawPath = rawPath
-	addQueryValues(&resolved, queryValues)
-	return &resolved, nil
+	addQueryValues(resolved, queryValues)
+	return resolved, nil
 }
 
 func joinEscapedURLPath(basePath, requestPath string) (string, string, error) {

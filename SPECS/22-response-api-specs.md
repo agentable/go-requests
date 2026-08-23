@@ -56,7 +56,7 @@ verify that a positive buffering limit does not pre-read or truncate streams.
 - `Bytes`, `String`, `Close`
 
 These helpers describe response metadata only. They do not change delivery behavior.
-`Header()` returns a snapshot; intentional header mutation goes through `Raw().Header`.
+`Header()` and `URL()` return snapshots; intentional mutation goes through `Raw()`.
 
 Diagnostics:
 

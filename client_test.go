@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
-	"encoding/json/v2"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -14,6 +13,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"encoding/json/v2"
 
 	"github.com/goccy/go-yaml"
 	"github.com/stretchr/testify/assert"

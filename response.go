@@ -121,9 +121,9 @@ func (r *Response) Location() (*url.URL, error) {
 	return r.rawResponse.Location()
 }
 
-// URL returns the request URL that elicited the response.
+// URL returns a copy of the request URL that elicited the response.
 func (r *Response) URL() *url.URL {
-	return r.rawResponse.Request.URL
+	return r.rawResponse.Request.URL.Clone()
 }
 
 // Elapsed returns the duration from request dispatch through response setup.

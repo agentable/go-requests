@@ -2,10 +2,11 @@ package requests
 
 import (
 	"bytes"
-	"encoding/json/jsontext"
-	"encoding/json/v2"
 	"fmt"
 	"io"
+
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 )
 
 // JSONEncoder handles encoding of JSON data.

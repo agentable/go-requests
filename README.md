@@ -1,7 +1,6 @@
 # go-requests
-
-[![Go Version](https://img.shields.io/badge/go-1.26.5-00ADD8?style=flat-square&logo=go)](go.mod)
 [![License](https://img.shields.io/badge/license-Agentable%20Commercial-blue.svg?style=flat-square)](LICENSE)
+
 
 A fluent HTTP client library for Go with middleware, retries, proxy and redirect controls, caller-owned streaming, ordered-header intent, optional client profiles, and JSON/XML/YAML helpers.
 
@@ -23,7 +22,6 @@ A fluent HTTP client library for Go with middleware, retries, proxy and redirect
 go get github.com/agentable/go-requests
 ```
 
-Requires **Go 1.26.5**.
 
 Optional extension modules:
 

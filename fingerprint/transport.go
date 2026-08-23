@@ -52,9 +52,31 @@ func ConfigureTransport(transport *http.Transport, helloID utls.ClientHelloID) e
 			_ = rawConn.Close()
 			return nil, err
 		}
-		return conn, nil
+		return &tlsConnection{UConn: conn}, nil
 	}
 	return nil
+}
+
+type tlsConnection struct {
+	*utls.UConn
+}
+
+func (c *tlsConnection) ConnectionState() tls.ConnectionState {
+	state := c.UConn.ConnectionState()
+	return tls.ConnectionState{
+		Version:                     state.Version,
+		HandshakeComplete:           state.HandshakeComplete,
+		DidResume:                   state.DidResume,
+		CipherSuite:                 state.CipherSuite,
+		NegotiatedProtocol:          state.NegotiatedProtocol,
+		ServerName:                  state.ServerName,
+		PeerCertificates:            state.PeerCertificates,
+		VerifiedChains:              state.VerifiedChains,
+		SignedCertificateTimestamps: state.SignedCertificateTimestamps,
+		OCSPResponse:                state.OCSPResponse,
+		TLSUnique:                   state.TLSUnique,
+		ECHAccepted:                 state.ECHAccepted,
+	}
 }
 
 func utlsConfig(config *tls.Config, addr string) *utls.Config {

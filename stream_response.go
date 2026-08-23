@@ -52,9 +52,9 @@ func (r *StreamResponse) Header() http.Header {
 	return r.rawResponse.Header.Clone()
 }
 
-// URL returns the request URL that elicited the response.
+// URL returns a copy of the request URL that elicited the response.
 func (r *StreamResponse) URL() *url.URL {
-	return r.rawResponse.Request.URL
+	return r.rawResponse.Request.URL.Clone()
 }
 
 // Elapsed returns the duration from request dispatch through response setup.

@@ -149,7 +149,7 @@ Specification documents in [`SPECS/`](SPECS/) define system contracts, API rules
 
 ### Must Follow
 
-- Go 1.26.5 — use modern Go features already present in this repo when they simplify code.
+- Go 1.27 — use modern Go features already present in this repo when they simplify code.
 - Follow [Google Go Best Practices](https://google.github.io/go-style/best-practices).
 - Follow [Google Go Style Decisions](https://google.github.io/go-style/decisions).
 - KISS/DRY/YAGNI — no premature abstractions, no unused features, no duplicated logic.
@@ -164,7 +164,7 @@ Specification documents in [`SPECS/`](SPECS/) define system contracts, API rules
 - Return errors instead of panicking; preserve context with wrapped errors.
 - Use `httptest.Server` or local protocol servers for request/response behavior tests.
 
-### Go 1.26 Features
+### Go 1.27 Features
 
 | Feature | Where Used |
 |---------|------------|
@@ -257,7 +257,7 @@ Specialized skills live in [`.agents/skills/`](.agents/skills/). Use the smalles
 |-------|-------------|
 | [`agent-md-writing`](.agents/skills/agent-md-writing/) | Updating `CLAUDE.md` / `AGENTS.md` development instructions |
 | [`go-best-practices`](.agents/skills/go-best-practices/) | Writing or reviewing idiomatic Go APIs, errors, tests, naming, and concurrency |
-| [`modernizing`](.agents/skills/modernizing/) | Adopting Go 1.20-1.26 features when they simplify code |
+| [`modernizing`](.agents/skills/modernizing/) | Adopting Go 1.20-1.27 features when they simplify code |
 | [`code-simplifying`](.agents/skills/code-simplifying/) | Refining recently written code for clarity without changing behavior |
 | [`code-refactoring`](.agents/skills/code-refactoring/) | Larger refactors after feature work or when architecture smells accumulate |
 | [`dependency-selecting`](.agents/skills/dependency-selecting/) | Choosing Go dependencies and keeping optional costs out of core |

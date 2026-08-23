@@ -4,32 +4,42 @@ vars:
   PROJECT_ROOT:
     sh: pwd
   GOBIN: '{{.PROJECT_ROOT}}/bin'
-  GOLANGCI_LINT_LOCAL_BINARY: '{{.GOBIN}}/golangci-lint'
-  GOVULNCHECK_LOCAL_BINARY: '{{.GOBIN}}/govulncheck'
+  GOLANGCI_LINT_LOCAL_BINARY: '{{.GOBIN}}/golangci-lint{{exeExt}}'
   REQUIRED_GOLANGCI_LINT_VERSION:
     sh: cat .golangci.version 2>/dev/null || echo "2.13.1"
+  GOLANGCI_LINT_BINARY:
+    sh: |
+      required="$(cat .golangci.version 2>/dev/null || echo "2.13.1")"
+      matches_required() {
+        [ -x "$1" ] || return 1
+        [ "$("$1" version --short 2>/dev/null || true)" = "$required" ]
+      }
+      old_ifs="$IFS"
+      IFS=:
+      for dir in $PATH; do
+        [ -n "$dir" ] || dir=.
+        candidate="$dir/golangci-lint{{exeExt}}"
+        if matches_required "$candidate"; then
+          echo "$candidate"
+          exit 0
+        fi
+      done
+      IFS="$old_ifs"
+      if matches_required "{{.GOLANGCI_LINT_LOCAL_BINARY}}"; then
+        echo "{{.GOLANGCI_LINT_LOCAL_BINARY}}"
+        exit 0
+      fi
+      echo "{{.GOLANGCI_LINT_LOCAL_BINARY}}"
+  GOLANGCI_LINT_VERSION:
+    sh: |
+      "{{.GOLANGCI_LINT_BINARY}}" version --short 2>/dev/null ||
+      echo "not-installed"
+
+  GOVULNCHECK_LOCAL_BINARY: '{{.GOBIN}}/govulncheck'
   REQUIRED_GOVULNCHECK_VERSION:
     sh: cat .govulncheck.version 2>/dev/null || echo "v1.4.0"
   RELEASE_VERSION:
     sh: awk '$1 == "github.com/agentable/go-requests" { print $2; exit }' browser/go.mod
-  GOLANGCI_LINT_BINARY:
-    sh: |
-      required="$(cat .golangci.version 2>/dev/null || echo "2.13.1")"
-      for tool in "$(command -v golangci-lint 2>/dev/null || true)" "{{.GOLANGCI_LINT_LOCAL_BINARY}}"; do
-        [ -n "$tool" ] || continue
-        [ -x "$tool" ] || continue
-        version="$("$tool" version --short 2>/dev/null || "$tool" version --short 2>/dev/null || true)"
-        if [ "$version" = "$required" ]; then
-          echo "$tool"
-          exit 0
-        fi
-      done
-      echo "{{.GOLANGCI_LINT_LOCAL_BINARY}}"
-  GOLANGCI_LINT_VERSION:
-    sh: |
-      {{.GOLANGCI_LINT_BINARY}} version --short 2>/dev/null ||
-      {{.GOLANGCI_LINT_BINARY}} version --short 2>/dev/null ||
-      echo "not-installed"
   GOVULNCHECK_BINARY:
     sh: |
       required="$(cat .govulncheck.version 2>/dev/null || echo "v1.4.0")"
@@ -170,13 +180,15 @@ tasks:
 
   lint:all:
     desc: Run linters for root and extension modules
+    deps:
+      - install-golangci-lint
     cmds:
       - task: lint
       - for:
           var: MODULES
         cmd: |
           echo "Running linters in {{.ITEM}}..."
-          cd {{.ITEM}} && {{.GOLANGCI_LINT_BINARY}} run --timeout=30m --concurrency=1 --path-prefix {{.ITEM}}
+          cd {{.ITEM}} && {{.GOLANGCI_LINT_BINARY}} run --timeout=30m --concurrency=1 --allow-serial-runners --path-prefix {{.ITEM}}
 
   install-golangci-lint:
     desc: Install golangci-lint with the required version
@@ -185,8 +197,8 @@ tasks:
       - |
         if [ "{{.GOLANGCI_LINT_VERSION}}" != "{{.REQUIRED_GOLANGCI_LINT_VERSION}}" ]; then
           echo "Installing golangci-lint v{{.REQUIRED_GOLANGCI_LINT_VERSION}}..."
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v{{.REQUIRED_GOLANGCI_LINT_VERSION}}
-          echo "golangci-lint v{{.REQUIRED_GOLANGCI_LINT_VERSION}} installed successfully"
+          GOWORK=off GOBIN="{{.GOBIN}}" go install \
+            github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v{{.REQUIRED_GOLANGCI_LINT_VERSION}}
         fi
     status:
       - test "{{.GOLANGCI_LINT_VERSION}}" = "{{.REQUIRED_GOLANGCI_LINT_VERSION}}"
@@ -211,7 +223,7 @@ tasks:
     cmds:
       - '{{.GOLANGCI_LINT_BINARY}} version'
       - echo "Running golangci-lint..."
-      - '{{.GOLANGCI_LINT_BINARY}} run --timeout=30m --concurrency=1 --path-prefix=.'
+      - '{{.GOLANGCI_LINT_BINARY}} run --timeout=30m --concurrency=1 --allow-serial-runners --path-prefix=.'
 
   tidy-lint:
     desc: Check if go.mod and go.sum are tidy

@@ -52,6 +52,7 @@ func (b *RequestBuilder) Form(v any) *RequestBuilder {
 		return b
 	}
 
+	formFields = formFields.Clone()
 	if formFields == nil {
 		formFields = url.Values{}
 	}

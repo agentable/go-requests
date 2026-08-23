@@ -22,6 +22,8 @@ The derived request context is released before the body is closed, so a body who
 
 `Elapsed()` returns the duration from request dispatch through stream response setup. `Attempts()` returns transport attempts for the stream response, including the first request.
 
+`Header()` and `URL()` return snapshots; callers that intentionally need to mutate the underlying response use `Raw()`.
+
 ## Line Iteration
 
 `Lines()` is line-oriented.

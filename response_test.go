@@ -623,6 +623,23 @@ func TestResponseURL(t *testing.T) {
 	}
 }
 
+func TestResponseURLReturnsCopy(t *testing.T) {
+	rawURL := &url.URL{
+		Scheme: "https",
+		User:   url.UserPassword("user", "password"),
+		Host:   "example.com",
+		Path:   "/original",
+	}
+	resp := &Response{rawResponse: &http.Response{Request: &http.Request{URL: rawURL}}}
+
+	got := resp.URL()
+	got.Path = "/mutated"
+
+	assert.NotSame(t, rawURL, got)
+	assert.NotSame(t, rawURL.User, got.User)
+	assert.Equal(t, "/original", resp.Raw().Request.URL.Path)
+}
+
 func TestResponseDiagnostics(t *testing.T) {
 	server := startTestHTTPServer()
 	defer server.Close()

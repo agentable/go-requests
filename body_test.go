@@ -31,6 +31,42 @@ func TestPrepareBodyWithFormFields(t *testing.T) {
 	assert.Equal(t, url.Values{"name": {"Jane Doe"}, "age": {"32"}}.Encode(), string(data))
 }
 
+func TestFormClonesCallerValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		input func() (any, func())
+	}{
+		{
+			name: "url values",
+			input: func() (any, func()) {
+				values := url.Values{"name": {"original"}}
+				return values, func() { values["name"][0] = "mutated" }
+			},
+		},
+		{
+			name: "string slice map",
+			input: func() (any, func()) {
+				values := map[string][]string{"name": {"original"}}
+				return values, func() { values["name"][0] = "mutated" }
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input, mutate := test.input()
+			builder := newTestClient(t).Post("/").Form(input)
+			mutate()
+
+			body, err := builder.prepareBody(&clientSnapshot{})
+			require.NoError(t, err)
+			data, err := io.ReadAll(body.body)
+			require.NoError(t, err)
+			assert.Equal(t, "name=original", string(data))
+		})
+	}
+}
+
 func TestMultipartExplicitContentTypeReachesTransport(t *testing.T) {
 	client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		assert.Equal(t, "application/vnd.example.upload", req.Header.Get("Content-Type"))

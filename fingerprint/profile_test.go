@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	utls "github.com/refraction-networking/utls"
 	"github.com/test-go/testify/require"
@@ -139,7 +140,9 @@ func TestProfileTLSDeliveryUsesDefaultALPNWhenConfigIsSetAfterProfile(t *testing
 	require.NoError(t, err)
 	defer conn.Close() //nolint:errcheck // test cleanup closes the TLS connection
 
-	tlsConn, ok := conn.(*utls.UConn)
+	tlsConn, ok := conn.(interface {
+		ConnectionState() tls.ConnectionState
+	})
 	require.True(t, ok)
 	require.Equal(t, "h2", tlsConn.ConnectionState().NegotiatedProtocol)
 }
@@ -257,6 +260,28 @@ func TestConfigureTransportCompletesTLSHandshake(t *testing.T) {
 
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 	require.Equal(t, "localhost", <-serverName)
+}
+
+func TestConfigureTransportUsesNegotiatedHTTP2(t *testing.T) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-Protocol", r.Proto)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+
+	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	require.NoError(t, ConfigureTransport(transport, utls.HelloChrome_Auto))
+
+	resp, err := (&http.Client{Transport: transport, Timeout: 5 * time.Second}).Get(server.URL)
+	require.NoError(t, err)
+	defer resp.Body.Close() //nolint:errcheck // test cleanup closes response body
+
+	require.Equal(t, "HTTP/2.0", resp.Proto)
+	require.NotNil(t, resp.TLS)
+	require.Equal(t, "h2", resp.TLS.NegotiatedProtocol)
+	require.Equal(t, "HTTP/2.0", resp.Header.Get("X-Request-Protocol"))
 }
 
 func TestConfigureTransportUsesDefaultDialer(t *testing.T) {

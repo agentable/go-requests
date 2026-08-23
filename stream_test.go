@@ -80,7 +80,10 @@ func TestStreamResponseRawAndAccessors(t *testing.T) {
 	headers := resp.Header()
 	headers.Set("X-Stream", "mutated")
 	assert.Equal(t, "yes", resp.Raw().Header.Get("X-Stream"))
-	assert.Equal(t, "/events", resp.URL().Path)
+	responseURL := resp.URL()
+	assert.Equal(t, "/events", responseURL.Path)
+	responseURL.Path = "/mutated"
+	assert.Equal(t, "/events", resp.Raw().Request.URL.Path)
 	assert.Equal(t, 1, resp.Attempts())
 	assert.Positive(t, resp.Elapsed())
 	assert.Equal(t, http.StatusAccepted, resp.Raw().StatusCode)
