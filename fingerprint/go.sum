@@ -1,5 +1,5 @@
-github.com/agentable/go-orderedobject v0.2.4 h1:X+3bfPbmow9+2//dPB+pvHpe8UfkAwl+hqEGI3MrgPo=
-github.com/agentable/go-orderedobject v0.2.4/go.mod h1:xgJzvu/Ol8CDTXGzNTiVX9nE5lYhbzz82m2wlhss3Dc=
+github.com/agentable/go-orderedobject v0.2.5 h1:Ljv/dupskGozaIWE2SVUXd3PRv/bctuu1xZbFrhMO2M=
+github.com/agentable/go-orderedobject v0.2.5/go.mod h1:xgJzvu/Ol8CDTXGzNTiVX9nE5lYhbzz82m2wlhss3Dc=
 github.com/agentable/go-requests v0.1.5 h1:5owQ/3cOmVepPTktQwzBR7QRPNUlvQD2hUN80BcUwJc=
 github.com/agentable/go-requests v0.1.5/go.mod h1:kd1d4DOwYr+KN8zouz+xYqwUQoJyREUBHkL5i7zVBFc=
 github.com/andybalholm/brotli v1.2.2 h1:HzTuoo2ErYQqf5qvcJInB8uvqSVxRttzkFexPWtnceM=

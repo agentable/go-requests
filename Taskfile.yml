@@ -7,18 +7,18 @@ vars:
   GOLANGCI_LINT_LOCAL_BINARY: '{{.GOBIN}}/golangci-lint'
   GOVULNCHECK_LOCAL_BINARY: '{{.GOBIN}}/govulncheck'
   REQUIRED_GOLANGCI_LINT_VERSION:
-    sh: cat .golangci.version 2>/dev/null || echo "2.12.2"
+    sh: cat .golangci.version 2>/dev/null || echo "2.13.1"
   REQUIRED_GOVULNCHECK_VERSION:
     sh: cat .govulncheck.version 2>/dev/null || echo "v1.4.0"
   RELEASE_VERSION:
     sh: awk '$1 == "github.com/agentable/go-requests" { print $2; exit }' browser/go.mod
   GOLANGCI_LINT_BINARY:
     sh: |
-      required="$(cat .golangci.version 2>/dev/null || echo "2.12.2")"
+      required="$(cat .golangci.version 2>/dev/null || echo "2.13.1")"
       for tool in "$(command -v golangci-lint 2>/dev/null || true)" "{{.GOLANGCI_LINT_LOCAL_BINARY}}"; do
         [ -n "$tool" ] || continue
         [ -x "$tool" ] || continue
-        version="$("$tool" version --format short 2>/dev/null || "$tool" version --short 2>/dev/null || true)"
+        version="$("$tool" version --short 2>/dev/null || "$tool" version --short 2>/dev/null || true)"
         if [ "$version" = "$required" ]; then
           echo "$tool"
           exit 0
@@ -27,7 +27,7 @@ vars:
       echo "{{.GOLANGCI_LINT_LOCAL_BINARY}}"
   GOLANGCI_LINT_VERSION:
     sh: |
-      {{.GOLANGCI_LINT_BINARY}} version --format short 2>/dev/null ||
+      {{.GOLANGCI_LINT_BINARY}} version --short 2>/dev/null ||
       {{.GOLANGCI_LINT_BINARY}} version --short 2>/dev/null ||
       echo "not-installed"
   GOVULNCHECK_BINARY:

@@ -10,7 +10,7 @@ require (
 )
 
 require (
-	github.com/agentable/go-orderedobject v0.2.4 // indirect
+	github.com/agentable/go-orderedobject v0.2.5 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect

@@ -3,7 +3,7 @@ module github.com/agentable/go-requests/browser
 go 1.27
 
 require (
-	github.com/agentable/go-orderedobject v0.2.4
+	github.com/agentable/go-orderedobject v0.2.5
 	github.com/agentable/go-requests v0.1.5
 	github.com/test-go/testify v1.1.4
 )
