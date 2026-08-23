@@ -3,13 +3,13 @@ module github.com/agentable/go-requests/fingerprint
 go 1.27
 
 require (
-	github.com/agentable/go-requests v0.1.7
+	github.com/agentable/go-requests v0.1.8
 	github.com/refraction-networking/utls v1.8.2
 	github.com/test-go/testify v1.1.4
 )
 
 require (
-	github.com/agentable/go-orderedobject v0.2.5 // indirect
+	github.com/agentable/go-orderedobject v0.2.6 // indirect
 	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/google/go-querystring v1.2.0 // indirect
