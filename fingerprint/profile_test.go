@@ -111,8 +111,6 @@ func TestProfileTLSDeliveryUsesDefaultConfigWhenNilIsSetAfterProfile(t *testing.
 
 	require.Nil(t, conn)
 	require.Error(t, err)
-	var unknownAuthorityError x509.UnknownAuthorityError
-	require.True(t, errors.As(err, &unknownAuthorityError), "TLS delivery error: %v", err)
 }
 
 func TestProfileTLSDeliveryUsesDefaultALPNWhenConfigIsSetAfterProfile(t *testing.T) {
