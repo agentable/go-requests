@@ -1,6 +1,6 @@
 module github.com/agentable/go-requests
 
-go 1.27
+go 1.27.0
 
 require (
 	github.com/agentable/go-orderedobject v0.2.6
