@@ -110,17 +110,20 @@ Retry behavior is configured through `RetryPolicy` at the client layer with
 
 ### Extension Module Release Boundary
 
-Extension modules remain independently consumable modules. During a breaking
-root release, the root module must be tagged and resolvable before extension
-modules require that version.
+Extension modules remain independently consumable modules, but releases are
+coordinated. Root and extension modules use one common version, their annotated
+tags point to one commit, and every extension requires the root at that version.
 
-- **Why**: `go mod tidy` validates required versions even when the workspace is
-  active. Pre-pinning extensions to an unpublished root version creates a broken
-  maintenance state.
-- **Rejected**: Local `replace` directives or pre-pinned unpublished root
-  versions as a substitute for publishable module verification.
-- **Contract Impact**: `task test:published` is the release-boundary gate after
-  the root tag exists and extension modules require that exact root version.
+- **Why**: One coordinated release prevents split tag histories from making the
+  repository state ambiguous to consumers and maintainers.
+- **Rejected**: Root-first partial publication, mixed module versions, tags on
+  different commits, and local `replace` directives in published modules.
+- **Contract Impact**: The complete pre-pin gate validates the currently
+  resolvable graph before the unpublished common pins are written. One atomic
+  push then publishes the final commit and all module tags together;
+  `task verify:all` and `task test:published` validate that final commit after
+  the common version is resolvable outside `go.work`. A failed post-publication
+  gate requires a new common patch release, never a moved tag.
 
 ## Deliberate Public Escape Hatches
 
@@ -149,7 +152,8 @@ These symbols remain public because they name real integration points:
   `RequestBuilder` dispatch.
 - Do not add a public symbol unless it names a durable concept that belongs in
   the request language.
-- Do not make extension modules depend on an unpublished root version.
+- Do not publish extension modules whose root requirement differs from their
+  own release version.
 
 ## Contract Invariants
 

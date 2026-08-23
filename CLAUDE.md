@@ -106,8 +106,8 @@ For multi-module work:
 
 1. Use local `go.work` for development across root and extensions.
 2. Run `task test:all`, `task tidy:all`, and module-specific lint before finishing.
-3. Follow [RELEASE.md](RELEASE.md) for root-first release sequencing.
-4. Use `task test:published` only after the matching root version is tagged and extension modules require it.
+3. Follow [RELEASE.md](RELEASE.md) for coordinated release sequencing.
+4. Use `task test:published` only after the coordinated tags are published and extension modules require that common version.
 5. Remember extension modules without local `replace` depend on the published root module when `GOWORK=off`.
 
 ## SPECS Index

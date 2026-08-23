@@ -1,9 +1,7 @@
 version: '3'
 
 vars:
-  PROJECT_ROOT:
-    sh: pwd
-  GOBIN: '{{.PROJECT_ROOT}}/bin'
+  GOBIN: '{{.ROOT_DIR}}/bin'
   GOLANGCI_LINT_LOCAL_BINARY: '{{.GOBIN}}/golangci-lint{{exeExt}}'
   REQUIRED_GOLANGCI_LINT_VERSION:
     sh: cat .golangci.version 2>/dev/null || echo "2.13.1"
@@ -37,12 +35,12 @@ vars:
 
   GOVULNCHECK_LOCAL_BINARY: '{{.GOBIN}}/govulncheck'
   REQUIRED_GOVULNCHECK_VERSION:
-    sh: cat .govulncheck.version 2>/dev/null || echo "v1.4.0"
+    sh: cat .govulncheck.version 2>/dev/null || echo "v1.7.0"
   RELEASE_VERSION:
     sh: awk '$1 == "github.com/agentable/go-requests" { print $2; exit }' browser/go.mod
   GOVULNCHECK_BINARY:
     sh: |
-      required="$(cat .govulncheck.version 2>/dev/null || echo "v1.4.0")"
+      required="$(cat .govulncheck.version 2>/dev/null || echo "v1.7.0")"
       for tool in "$(command -v govulncheck 2>/dev/null || true)" "{{.GOVULNCHECK_LOCAL_BINARY}}"; do
         [ -n "$tool" ] || continue
         [ -x "$tool" ] || continue
@@ -55,7 +53,8 @@ vars:
       echo "{{.GOVULNCHECK_LOCAL_BINARY}}"
   GOVULNCHECK_VERSION:
     sh: |
-      {{.GOVULNCHECK_BINARY}} -version 2>/dev/null | awk '/^Scanner:/ { sub(/^govulncheck@/, "", $2); print $2; exit }' ||
+      {{.GOVULNCHECK_BINARY}} -version 2>/dev/null |
+      awk '/^Scanner:/ { sub(/^govulncheck@/, "", $2); print $2; exit }' ||
       echo "not-installed"
   MODULES:
     sh: |
@@ -138,18 +137,18 @@ tasks:
     desc: Run all tests with race detection
     cmds:
       - echo "Running all tests..."
-      - go test -race ./...
+      - go test -race -count=1 ./...
 
   test:all:
     desc: Run tests for root and extension modules
     cmds:
       - echo "Running root module tests..."
-      - go test -race ./...
+      - go test -race -count=1 ./...
       - for:
           var: MODULES
         cmd: |
           echo "Running tests in {{.ITEM}}..."
-          cd {{.ITEM}} && go test -race ./...
+          cd {{.ITEM}} && go test -race -count=1 ./...
 
   test:published:
     desc: Verify extension modules against the published root module
@@ -170,7 +169,7 @@ tasks:
             exit 1
           fi
           echo "Testing {{.ITEM}} outside go.work..."
-          cd {{.ITEM}} && GOWORK=off go test ./...
+          cd {{.ITEM}} && GOWORK=off go test -race -count=1 ./...
 
   lint:
     desc: Run all linters
@@ -188,7 +187,9 @@ tasks:
           var: MODULES
         cmd: |
           echo "Running linters in {{.ITEM}}..."
-          cd {{.ITEM}} && {{.GOLANGCI_LINT_BINARY}} run --timeout=30m --concurrency=1 --allow-serial-runners --path-prefix {{.ITEM}}
+          cd {{.ITEM}} && {{.GOLANGCI_LINT_BINARY}} run \
+            --timeout=30m --concurrency=1 --allow-serial-runners \
+            --path-prefix {{.ITEM}}
 
   install-golangci-lint:
     desc: Install golangci-lint with the required version
@@ -282,11 +283,33 @@ tasks:
       - echo "Formatting Go code..."
       - '{{.GOLANGCI_LINT_BINARY}} fmt ./...'
 
+  fmt:all:
+    desc: Format root and extension modules
+    deps:
+      - install-golangci-lint
+    cmds:
+      - task: fmt
+      - for:
+          var: MODULES
+        cmd: |
+          echo "Formatting {{.ITEM}}..."
+          cd {{.ITEM}} && {{.GOLANGCI_LINT_BINARY}} fmt ./...
+
   vet:
     desc: Run go vet
     cmds:
       - echo "Running go vet..."
       - go vet ./...
+
+  vet:all:
+    desc: Run go vet for root and extension modules
+    cmds:
+      - task: vet
+      - for:
+          var: MODULES
+        cmd: |
+          echo "Running go vet in {{.ITEM}}..."
+          cd {{.ITEM}} && go vet ./...
 
   verify:
     desc: Run all verification steps (deps, format, vet, lint, test, vuln)
@@ -300,12 +323,11 @@ tasks:
       - echo "All verification steps completed successfully ✅"
 
   verify:all:
-    desc: Run full verification for root and extension modules
+    desc: Run coordinated workspace verification for root and extension modules
     cmds:
-      - task: deps
-      - task: fmt
-      - task: vet
       - task: tidy:all
+      - task: fmt:all
+      - task: vet:all
       - task: lint:all
       - task: test:all
       - task: vuln:all

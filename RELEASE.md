@@ -1,76 +1,80 @@
-# Release Handoff
+# Coordinated Release Handoff
 
-This repository is a multi-module Go library. The root module must be released
-before extension modules are tested or published outside `go.work`.
+This repository publishes the root, browser, fingerprint, and HTTP/3 modules as
+one coordinated release set.
 
 ## Release Rule
 
-Pick the next semantic version before starting the release. The release sequence
-always starts at the root module; extension modules move only after the root
-version is tagged, pushed, and resolvable.
-
-Do not add removed-surface aliases, pre-pin extension modules to an unpublished
-root version, or weaken `task test:published` to make the unpublished workspace
-look complete. A failed published-module check before the root tag exists is the
-correct signal.
+Select one next patch version from the aggregate tag history of every
+publishable module. Pin each extension to the root at that version, commit the
+complete release set, and create every annotated tag at that commit. Never move,
+delete, recreate, or force-update an existing tag.
 
 ## Required Order
 
-1. Run the full workspace gate:
+1. Upgrade and tidy the currently resolvable module graph, then run the
+   complete pre-pin gate while every extension still requires the latest
+   published root version:
 
    ```bash
-   task test:all
-   task lint:all
+   task deps:update
+   task verify:all
    ```
 
-2. Tag and publish the root module first:
-
-   ```bash
-   git tag -a vX.Y.Z -m vX.Y.Z
-   git push origin vX.Y.Z
-   GOPROXY=direct go list -m github.com/agentable/go-requests@vX.Y.Z
-   ```
-
-3. After the root version is visible, pin each extension module to the released
-   root version without local `replace` directives:
+2. Pin every extension to the common next version and commit the final tree:
 
    ```bash
    for dir in browser fingerprint http3; do
-     (cd "$dir" && go mod edit -require=github.com/agentable/go-requests@vX.Y.Z && go mod tidy)
+     (cd "$dir" && go mod edit -require=github.com/agentable/go-requests@vX.Y.Z)
    done
+   git commit
    ```
 
-   Do not pin the extension modules to `vX.Y.Z` before the root tag is
-   resolvable. `go mod tidy` validates required versions even inside `go.work`,
-   so pre-pinning creates a noisy broken maintenance state instead of a cleaner
-   release boundary.
+   Do not run `go mod tidy` after writing the unpublished common pin. Go checks
+   required versions during tidy even with `go.work` active, so that boundary is
+   verified on the final commit only after the atomic push makes all four tags
+   resolvable.
 
-4. Verify each extension outside the workspace:
-
-   ```bash
-   task test:published
-   ```
-
-5. Tag and publish extension modules only after the `GOWORK=off` checks pass:
+3. Confirm every target tag is absent, then create all annotated tags at the
+   final commit:
 
    ```bash
+   git tag -a vX.Y.Z -m vX.Y.Z
    git tag -a browser/vX.Y.Z -m browser/vX.Y.Z
    git tag -a fingerprint/vX.Y.Z -m fingerprint/vX.Y.Z
    git tag -a http3/vX.Y.Z -m http3/vX.Y.Z
-   git push origin browser/vX.Y.Z fingerprint/vX.Y.Z http3/vX.Y.Z
    ```
 
-6. Verify published modules:
+4. Push `main` and only the explicit new tag refspecs atomically:
 
    ```bash
+   git push --atomic origin \
+     refs/heads/main:refs/heads/main \
+     refs/tags/vX.Y.Z:refs/tags/vX.Y.Z \
+     refs/tags/browser/vX.Y.Z:refs/tags/browser/vX.Y.Z \
+     refs/tags/fingerprint/vX.Y.Z:refs/tags/fingerprint/vX.Y.Z \
+     refs/tags/http3/vX.Y.Z:refs/tags/http3/vX.Y.Z
+   ```
+
+5. Verify all published modules and rerun the complete gate on the final
+   commit:
+
+   ```bash
+   GOPROXY=direct go list -m github.com/agentable/go-requests@vX.Y.Z
    GOPROXY=direct go list -m github.com/agentable/go-requests/browser@vX.Y.Z
    GOPROXY=direct go list -m github.com/agentable/go-requests/fingerprint@vX.Y.Z
    GOPROXY=direct go list -m github.com/agentable/go-requests/http3@vX.Y.Z
+   task verify:all
+   task test:published
    ```
+
+   If this post-publication gate finds a release defect, fix it in a new common
+   patch release. Published tags remain immutable.
 
 ## Verification
 
-- `task test:all`
-- `task lint:all`
-- `task test:published` after the root version is published and extension modules
-  require that exact root version
+- `task verify:all` before writing the unpublished common pins
+- all four annotated tags peel to the same commit
+- all extension root requirements equal the common tag version
+- `task verify:all` and `task test:published` on the final commit after the
+  atomic push

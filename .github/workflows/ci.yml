@@ -20,9 +20,11 @@ env:
 jobs:
   test:
     name: Test
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
+      GOPRIVATE: github.com/agentable/*
       GOWORK: "off"
     steps:
       - name: Check out repository
@@ -43,6 +45,10 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install dependencies
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/
         run: task deps
 
       - name: Run tests
@@ -50,9 +56,11 @@ jobs:
 
   lint:
     name: Lint
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
+      GOPRIVATE: github.com/agentable/*
       GOWORK: "off"
       GOGC: "50"
       GOMEMLIMIT: 4GiB
@@ -75,6 +83,10 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check module graph is tidy
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/
         run: task tidy-lint
 
       - name: Read golangci-lint version
@@ -89,9 +101,11 @@ jobs:
 
   workspace:
     name: Workspace
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
+      GOPRIVATE: github.com/agentable/*
       GOGC: "50"
       GOMEMLIMIT: 4GiB
     steps:
@@ -116,23 +130,34 @@ jobs:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create local workspace
-        run: go work init . ./browser ./fingerprint ./http3
-
       - name: Run workspace tests
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/
         run: task test:all
 
       - name: Run workspace linters
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/
         run: task lint:all
 
       - name: Run workspace vulnerability checks
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/
         run: task vuln:all
 
   security:
     name: Security
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
+      GOPRIVATE: github.com/agentable/*
       GOWORK: "off"
     steps:
       - name: Check out repository
@@ -152,4 +177,8 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run govulncheck
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/
         run: task vuln
