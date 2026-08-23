@@ -141,6 +141,8 @@ tasks:
 
   test:all:
     desc: Run tests for root and extension modules
+    deps:
+      - tidy:all
     cmds:
       - echo "Running root module tests..."
       - go test -race -count=1 ./...
