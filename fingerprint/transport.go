@@ -68,7 +68,6 @@ func utlsConfig(config *tls.Config, addr string) *utls.Config {
 		}
 	}
 	return &utls.Config{
-		Rand:                        clone.Rand,
 		Time:                        clone.Time,
 		Certificates:                utlsCertificates(clone.Certificates),
 		VerifyPeerCertificate:       clone.VerifyPeerCertificate,
