@@ -21,6 +21,9 @@ type profile struct {
 type Option func(*profile)
 
 // WithTLSConfig captures a standard shallow clone for the uTLS handshake.
+// Fingerprint presets control the supported groups sent in ClientHello; an
+// explicit CurvePreferences value does not override the preset. Use the
+// standard TLS transport when an explicit curve allowlist is required.
 func WithTLSConfig(config *tls.Config) Option {
 	return func(p *profile) {
 		if config == nil {

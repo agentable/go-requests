@@ -15,6 +15,9 @@ import (
 )
 
 // ConfigureTransport configures transport to use helloID for TLS handshakes.
+// Fingerprint presets control the supported groups sent in ClientHello; an
+// explicit CurvePreferences value does not override the preset. Use the
+// standard TLS transport when an explicit curve allowlist is required.
 func ConfigureTransport(transport *http.Transport, helloID utls.ClientHelloID) error {
 	if transport == nil {
 		return fmt.Errorf("%w: transport", requests.ErrInvalidConfigValue)

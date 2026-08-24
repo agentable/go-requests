@@ -3,7 +3,7 @@ module github.com/agentable/go-requests
 go 1.27.0
 
 require (
-	github.com/agentable/go-orderedobject v0.2.7
+	github.com/agentable/go-orderedobject v0.2.8
 	github.com/goccy/go-yaml v1.19.2
 	github.com/google/go-cmp v0.7.0
 	github.com/google/go-querystring v1.2.0
