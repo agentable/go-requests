@@ -159,6 +159,9 @@ Specification documents in [`SPECS/`](SPECS/) define system contracts, API rules
 - Treat buffered `Send` response bodies as library-owned and `SendStream` bodies as caller-owned.
 - Apply root TLS and session options only to `*http.Transport`; fail incompatible transports instead of partially mutating or replacing them.
 - Keep profile behavior client-level; request-local headers and ordered headers override profile defaults.
+- Treat `WithTransport` inputs as borrowed. A caller using a closable transport,
+  including HTTP/3, retains the handle and closes it only after every client,
+  clone, snapshot, and in-flight request using it is done.
 - Use versioned names for fixed browser header profiles; keep unversioned names only for dependency-controlled auto profiles.
 - Keep extension modules publishable; do not encode local workspace relationships in extension `go.mod` files.
 - Return errors instead of panicking; preserve context with wrapped errors.
@@ -233,7 +236,7 @@ Optional extension dependencies:
 |--------|------------|---------|
 | `browser` | `github.com/agentable/go-orderedobject` | Browser-like ordered header profiles |
 | `fingerprint` | `github.com/refraction-networking/utls` | TLS ClientHello fingerprint profiles |
-| `http3` | `github.com/quic-go/quic-go` | QUIC HTTP/3 transport profiles |
+| `http3` | `github.com/quic-go/quic-go` | Caller-owned QUIC HTTP/3 transports |
 
 ## Error Handling
 

@@ -116,7 +116,6 @@ type rejectingEncoder struct {
 }
 
 func (e rejectingEncoder) Encode(any) (io.Reader, error) { return nil, e.err }
-func (rejectingEncoder) ContentType() string             { return "application/json" }
 
 func TestBodyPreparationFailuresPreventDispatch(t *testing.T) {
 	encodeErr := errors.New("encode rejected")

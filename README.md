@@ -11,7 +11,7 @@ A fluent HTTP client library for Go with middleware, retries, proxy and redirect
 - **Retry-aware delivery**: Combine retry counts, backoff strategies, and `Retry-After` handling without wrapping `net/http` yourself.
 - **Transport controls**: Configure TLS, mTLS, HTTP/2, redirect policies, proxies, bypass rules, resolver/dialer hooks, and connection pooling.
 - **Ordered headers**: Express header order as request intent with `orderedobject`, while preserving `net/http` header semantics.
-- **Optional profiles**: Apply browser-like headers, TLS ClientHello fingerprints, or HTTP/3 through separate extension modules.
+- **Optional extensions**: Apply browser-like headers and TLS ClientHello fingerprints as profiles, or install an explicit caller-owned HTTP/3 transport.
 - **`net/http` handoff**: Pass a caller-owned snapshot of standard client configuration to other SDKs.
 - **Response helpers**: Bound buffered responses, decode JSON/XML/YAML, inspect diagnostics, iterate lines, or save to disk without accepting truncated data.
 - **Composable middleware**: Attach header or cookie middleware at the client or request level.
@@ -93,7 +93,16 @@ if err != nil {
 `WithHeaders` captures a copy during construction. Later changes to the input
 header do not affect the client; a nil header means no default headers.
 
-### Optional profiles
+A non-empty base URL must be absolute and hierarchical, include a host, and
+have no fragment. Base URL query values are retained and combined with query
+values from the request path and builder. The default and standard transports
+accept HTTP(S) bases; a custom scheme requires a custom transport in the final
+client configuration. Malformed base query syntax fails construction;
+malformed request-path query syntax fails request preflight. Construction rejects typed-nil codecs, loggers,
+transports, and local addresses instead of deferring method dispatch until the
+first request.
+
+### Optional profiles and transports
 
 Browser-like defaults:
 
@@ -129,7 +138,7 @@ if err != nil {
 }
 ```
 
-HTTP/3 profile:
+HTTP/3 transport:
 
 ```go
 import (
@@ -139,21 +148,26 @@ import (
 	"github.com/agentable/go-requests/http3"
 )
 
-client, err := requests.New(
-	requests.WithProfile(http3.Profile(http3.WithTLSConfig(&tls.Config{
+transport := http3.Transport(http3.WithTLSConfig(&tls.Config{
 		MinVersion: tls.VersionTLS13,
-	}))),
-)
+	}))
+defer func() {
+	if err := transport.Close(); err != nil {
+		log.Printf("close HTTP/3 transport: %v", err)
+	}
+}()
+
+client, err := requests.New(requests.WithTransport(transport))
 if err != nil {
 	log.Fatal(err)
 }
 ```
 
-Optional profile packages keep heavier dependencies out of the core module:
+Optional extension packages keep heavier dependencies out of the core module:
 
 - `github.com/agentable/go-requests/browser` applies browser-like headers, ordered header metadata, and HTTP/2 preference.
 - `github.com/agentable/go-requests/fingerprint` applies uTLS ClientHello fingerprints.
-- `github.com/agentable/go-requests/http3` applies a QUIC HTTP/3 transport.
+- `github.com/agentable/go-requests/http3` returns a QUIC HTTP/3 transport whose lifecycle remains caller-owned.
 
 ### Transport Options
 
@@ -217,6 +231,10 @@ resp, err := client.Post("/articles").
 	Send(context.Background())
 ```
 
+Custom encoders implement only `Encode(any) (io.Reader, error)`. The typed body
+helper owns the wire media type: `JSON`, `XML`, and `YAML` set their respective
+`Content-Type`, and a later explicit `ContentType(...)` call overrides it.
+
 ### Path and query parameters
 
 ```go
@@ -234,6 +252,9 @@ resp, err := client.Get("/search").
 	Query("tag", "http").
 	Send(context.Background())
 ```
+
+Query values already present on the base URL or request path are preserved.
+Builder values are appended, including when a key repeats across those layers.
 
 For non-standard methods, use the method-first request entry:
 
@@ -392,7 +413,11 @@ if err != nil {
 `WithCookieJar` accepts any non-nil `http.CookieJar`. The client borrows that
 jar by identity; `WithSession` preserves it instead of replacing it.
 
-Root TLS, session, proxy, dial, and pool options configure the standard `*http.Transport`. When a transport profile such as HTTP/3 is active, unsupported later options return `ErrInvalidTransportType`; they never replace the selected protocol silently. Put TLS/session options before an HTTP/3 profile when the profile should consume them.
+Root TLS, session, proxy, dial, and pool options configure the standard
+`*http.Transport`. When a custom transport is active, incompatible root options
+return `ErrInvalidTransportType`; they never replace it silently. Configure an
+HTTP/3 transport directly with `http3.WithTLSConfig` and the other HTTP/3
+options before passing it to `requests.WithTransport`.
 
 `WithTLSConfig(nil)` explicitly clears TLS state established by an earlier root
 TLS option and restores the active standard transport to Go's TLS defaults. It
@@ -406,13 +431,18 @@ Construction ownership is explicit:
 | Input | Captured by `requests` | Still caller-owned |
 | --- | --- | --- |
 | `WithHeaders` | Header map and value slices | Nothing |
-| `WithTLSConfig` and profile TLS options | Standard shallow `tls.Config.Clone` | Referenced slices/maps, callbacks, certificate pools, session cache, key logger, private keys, and parsed leaves |
+| `WithTLSConfig` and extension TLS options | Standard shallow `tls.Config.Clone` | Referenced slices/maps, callbacks, certificate pools, session cache, key logger, private keys, and parsed leaves |
 | `WithCertificates` | Certificate slice, DER bytes, signature algorithms, OCSP staple, and SCT bytes | Private keys and parsed leaves |
 | `WithHTTPClient`, `WithTransport`, `WithCookieJar`, custom auth/logger/codecs | Nothing | The supplied collaborator and its concurrency safety |
 
 After construction, do not mutate values listed as caller-owned while the client
 may use them. `GetTLSConfig` also returns the standard shallow clone rather than
 claiming a full deep copy.
+
+`WithTransport` borrows the supplied transport. Clones and `AsHTTPClient`
+snapshots may share a custom transport by identity. If it implements `Close`,
+the caller closes it only after all clients, snapshots, and in-flight requests
+using it are done.
 
 ## Proxies and Redirects
 
@@ -516,8 +546,8 @@ reader over the owned buffered bytes. `resp.Bytes()` returns a caller-owned copy
 and `resp.Header()` returns a header snapshot; mutate `resp.Raw()` only when you
 intentionally need the underlying `net/http` response.
 
-Buffered responses require no `Close` call for connection reuse.
-`Response.Close` only closes the replacement reader over the buffered bytes.
+Buffered `Response` values have no `Close` method and require no cleanup call.
+Only `StreamResponse` retains a caller-owned live response body.
 
 ### Iterate line-oriented responses
 
@@ -630,7 +660,7 @@ Without `WithLogger`, clients remain silent. Custom loggers do not implement
 - Package docs: [pkg.go.dev/github.com/agentable/go-requests](https://pkg.go.dev/github.com/agentable/go-requests)
 - Browser profile docs: [pkg.go.dev/github.com/agentable/go-requests/browser](https://pkg.go.dev/github.com/agentable/go-requests/browser)
 - TLS fingerprint profile docs: [pkg.go.dev/github.com/agentable/go-requests/fingerprint](https://pkg.go.dev/github.com/agentable/go-requests/fingerprint)
-- HTTP/3 profile docs: [pkg.go.dev/github.com/agentable/go-requests/http3](https://pkg.go.dev/github.com/agentable/go-requests/http3)
+- HTTP/3 transport docs: [pkg.go.dev/github.com/agentable/go-requests/http3](https://pkg.go.dev/github.com/agentable/go-requests/http3)
 
 ## Development
 

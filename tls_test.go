@@ -124,7 +124,6 @@ func TestClientCertificates(t *testing.T) {
 		require.NoError(t, client.setCertificates(clientCert))
 		resp, err := client.Get("/").Send(context.Background())
 		require.NoError(t, err)
-		defer resp.Close() //nolint:errcheck // test cleanup closes response body
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode(), "status code not correct")
 		assert.Equal(t, "certificate verification successful", resp.String(), "response content not correct")

@@ -30,7 +30,6 @@
 //	if err != nil {
 //	    return err
 //	}
-//	defer resp.Close()
 //
 //	var user User
 //	if err := resp.DecodeJSON(&user); err != nil {
@@ -78,7 +77,9 @@
 //   - github.com/agentable/go-requests/fingerprint — uTLS ClientHello profiles
 //   - github.com/agentable/go-requests/http3       — QUIC HTTP/3 transport
 //
-// All three plug in through the [Profile] interface.
+// The browser and fingerprint modules plug in through [Profile]. The HTTP/3
+// module returns an explicit transport for [WithTransport]; callers close that
+// transport after every client, clone, and request using it is done.
 //
 // # Specifications
 //

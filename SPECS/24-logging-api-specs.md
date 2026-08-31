@@ -13,6 +13,9 @@ A valid logger implements all of:
 - `Warnf`
 - `Errorf`
 
+`WithLogger(nil)` clears logging. A typed-nil `Logger` is invalid construction
+and returns `ErrInvalidConfigValue` instead of entering runtime method dispatch.
+
 The package log levels are:
 
 - `LevelDebug`

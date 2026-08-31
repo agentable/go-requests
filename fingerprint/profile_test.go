@@ -41,7 +41,6 @@ func TestChromeProfileSendsRequest(t *testing.T) {
 
 	resp, err := client.Get(server.URL).Send(t.Context())
 	require.NoError(t, err)
-	defer resp.Close() //nolint:errcheck // test cleanup closes response body
 	require.Equal(t, http.StatusOK, resp.StatusCode())
 	require.Equal(t, "ok", resp.String())
 }
@@ -64,9 +63,8 @@ func TestProfileUsesDialContextSetAfterProfile(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	resp, err := client.Get(server.URL).Send(t.Context())
+	_, err = client.Get(server.URL).Send(t.Context())
 	require.NoError(t, err)
-	defer resp.Close() //nolint:errcheck // test cleanup closes response body
 	require.True(t, called.Load())
 }
 

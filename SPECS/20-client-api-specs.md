@@ -15,19 +15,33 @@ func (c *Client) Clone(opts ...Option) (*Client, error)
 
 `New` applies options in order and returns the first option error. `Clone` copies
 the current client defaults, applies options through the same validation path,
-and returns a new client. Invalid base URLs, invalid numeric values, invalid
-proxy URLs, profile option errors, and file-loading failures from certificate
-options fail during construction or cloning. A caller that receives a non-nil
-`*Client` receives a validated client.
+and returns a new client. After all options run, the complete configuration is
+validated once so option order does not change final-state validity. Invalid
+base URLs, invalid numeric values, invalid proxy URLs, profile option errors,
+and file-loading failures from certificate options fail during construction or
+cloning. A caller that receives a non-nil `*Client` receives a validated client.
+
+A non-empty base URL MUST be an absolute hierarchical URL with a scheme and
+host, and MUST NOT contain a fragment. Base URL query values are valid reusable
+defaults when they parse according to `net/url`; malformed query syntax fails
+construction. Valid values are combined with request-path and builder query
+values during dispatch. With the nil/default transport or a standard `*http.Transport`, the
+base scheme MUST be HTTP or HTTPS. A custom `http.RoundTripper` MAY support
+another absolute hierarchical scheme. This scheme rule observes the final
+transport, regardless of option order.
 
 Construction errors that carry a URL omit userinfo, query values, and
 fragments from their diagnostic text while preserving standard wrapped causes
 and package error classification.
 
 Invalid or typed-nil auth, nil middleware, nil or typed-nil cookie jars,
-empty/nil redirect policies, and PEM input containing no certificates also fail
-construction with `ErrInvalidConfigValue`. Validation happens before values are
-installed, so a failed `Clone` does not mutate the base client.
+typed-nil codecs, loggers, transports, and local addresses, empty/nil redirect
+policies, and PEM input containing no certificates also fail construction with
+`ErrInvalidConfigValue`. Plain nil keeps each option's established vocabulary:
+codecs remain invalid, while logger, transport, and local address clear their
+configured value. Option-local invalid values are rejected before installation;
+final validation runs on the disposable new or cloned client, so a failed
+`Clone` does not mutate the base client.
 
 > **Why**: Construction is a trust boundary. A client should either be valid and
 > ready to create requests, or construction should return an error the caller can
@@ -79,6 +93,9 @@ Ordered headers preserve caller-specified insertion order as request intent. The
 
 - `WithTimeout` sets the default `http.Client.Timeout`.
 - `WithTransport` and `WithHTTPClient` replace the underlying transport or client; `WithHTTPClient(nil)` is invalid.
+- A non-nil `WithTransport` value is borrowed. The caller owns its lifecycle
+  and concurrency safety and MUST NOT mutate or close it while this client, its
+  clones, its snapshots, or their requests may still use it.
 - `WithHTTP2` enables HTTP/2 on the active `*http.Transport` and reports configuration errors during construction.
 - When a standard transport option first needs a writable `*http.Transport`, it clones `http.DefaultTransport` and changes only the option's named concern. Unrelated `net/http` proxy, dial, timeout, pooling, and HTTP/2 defaults remain intact.
 - `WithDialTimeout`, `WithResolver`, `WithDialContext`, `WithLocalAddr`, `WithTLSHandshakeTimeout`, `WithResponseHeaderTimeout`, `WithMaxIdleConns`, `WithMaxIdleConnsPerHost`, `WithMaxConnsPerHost`, and `WithIdleConnTimeout` apply only when the underlying transport is a `*http.Transport`; construction fails with `ErrInvalidTransportType` when they cannot apply.
@@ -89,7 +106,13 @@ Ordered headers preserve caller-specified insertion order as request intent. The
 
 `WithHTTP2()` enables explicit HTTP/2 transport configuration during construction.
 
-Profiles are applied at the client layer through `WithProfile`. They contribute construction options such as headers, ordered headers, and protocol preferences as reusable defaults. A transport profile such as HTTP/3 is an explicit whole-transport replacement: it may replace earlier TCP dial/proxy concerns, consumes earlier TLS/session intent that it supports, and causes incompatible later root transport options to fail. Request-local metadata still overrides profile-applied defaults.
+Profiles are applied at the client layer through `WithProfile`. They contribute
+construction options such as headers, ordered headers, protocol preferences,
+and fingerprint hooks as reusable defaults. Request-local metadata still
+overrides profile-applied defaults. HTTP/3 is not a profile: its extension
+returns an explicit caller-owned transport for `WithTransport`. Root transport
+options that require `*http.Transport` fail with `ErrInvalidTransportType` when
+applied to HTTP/3 or another incompatible custom transport.
 
 ## TLS and HTTP/2
 
@@ -168,6 +191,10 @@ underlying timeout, cookie jar, redirect callback, and transport. The client
 value, a standard `*http.Transport`, and its top-level `tls.Config` are copied.
 Custom transports, the cookie jar, redirect callback, and values referenced by
 TLS configuration retain their identity.
+
+When a custom transport is shared by a client, clone, or snapshot, every such
+consumer shares the caller's external transport lifecycle. No implicit close,
+reference count, or ownership transfer occurs.
 
 The snapshot does not apply the requests base URL, headers, cookies outside the
 jar, auth, ordered metadata, middleware, retries, codecs, response buffering,

@@ -22,27 +22,6 @@ func (failingReader) Read([]byte) (int, error) {
 
 var errCodecRead = errors.New("codec read failed")
 
-func TestCodecContentTypes(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		encoder Encoder
-		want    string
-	}{
-		{name: "json", encoder: &JSONEncoder{}, want: "application/json;charset=utf-8"},
-		{name: "xml", encoder: &XMLEncoder{}, want: "application/xml;charset=utf-8"},
-		{name: "yaml", encoder: &YAMLEncoder{}, want: "application/yaml;charset=utf-8"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tc.want, tc.encoder.ContentType())
-		})
-	}
-}
-
 func TestCodecEncodeDefaultMarshalers(t *testing.T) {
 	t.Parallel()
 

@@ -26,11 +26,6 @@ func (e *XMLEncoder) Encode(v any) (io.Reader, error) {
 	return bytes.NewReader(data), nil
 }
 
-// ContentType returns the content type for XML data.
-func (e *XMLEncoder) ContentType() string {
-	return "application/xml;charset=utf-8"
-}
-
 // XMLDecoder handles decoding of XML data.
 type XMLDecoder struct {
 	UnmarshalFunc func(data []byte, v any) error // UnmarshalFunc unmarshals XML data into a value.

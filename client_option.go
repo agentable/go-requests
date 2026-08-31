@@ -37,14 +37,14 @@ func validateIntOption(name string, value int) error {
 }
 
 func validateEncoderOption(name string, encoder Encoder) error {
-	if encoder == nil {
+	if isNilInterface(encoder) {
 		return invalidOptionValue(name)
 	}
 	return nil
 }
 
 func validateDecoderOption(name string, decoder Decoder) error {
-	if decoder == nil {
+	if isNilInterface(decoder) {
 		return invalidOptionValue(name)
 	}
 	return nil
@@ -78,7 +78,9 @@ func validateMiddlewares(middlewares []Middleware) error {
 	return nil
 }
 
-// WithBaseURL sets the base URL for the client.
+// WithBaseURL sets the base URL for the client. A non-empty base must be an
+// absolute hierarchical URL with a host and no fragment. Its query values are
+// preserved and combined with request-path and builder query values.
 func WithBaseURL(baseURL string) Option {
 	return func(c *Client) error {
 		if baseURL != "" {
@@ -300,9 +302,14 @@ func WithRootCertificateFromString(pemCerts string) Option {
 	}
 }
 
-// WithTransport sets the HTTP transport for the client.
+// WithTransport sets the HTTP transport for the client. The client borrows a
+// non-nil transport; callers retain its lifecycle and must not close or mutate
+// it while this client, its clones, or its snapshots may have requests in flight.
 func WithTransport(transport http.RoundTripper) Option {
 	return func(c *Client) error {
+		if transport != nil && isNilInterface(transport) {
+			return invalidOptionValue("Transport")
+		}
 		c.setDefaultTransport(transport)
 		return nil
 	}
@@ -355,6 +362,9 @@ func WithDialContext(dial func(context.Context, string, string) (net.Conn, error
 // WithLocalAddr sets the local address used by the default transport dialer.
 func WithLocalAddr(addr net.Addr) Option {
 	return func(c *Client) error {
+		if addr != nil && isNilInterface(addr) {
+			return invalidOptionValue("LocalAddr")
+		}
 		return c.applyLocalAddr(addr)
 	}
 }
@@ -492,6 +502,9 @@ func WithoutProxy() Option {
 // WithLogger sets the logger for the client.
 func WithLogger(logger Logger) Option {
 	return func(c *Client) error {
+		if logger != nil && isNilInterface(logger) {
+			return invalidOptionValue("Logger")
+		}
 		c.setLogger(logger)
 		return nil
 	}

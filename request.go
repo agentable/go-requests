@@ -229,6 +229,10 @@ func resolveRequestURL(baseURL, requestPath string, queryValues url.Values) (*ur
 	if err != nil {
 		return nil, err
 	}
+	requestQuery, err := url.ParseQuery(requestURL.RawQuery)
+	if err != nil {
+		return nil, err
+	}
 	if requestURL.IsAbs() || baseURL == "" {
 		addQueryValues(requestURL, queryValues)
 		return requestURL, nil
@@ -239,9 +243,9 @@ func resolveRequestURL(baseURL, requestPath string, queryValues url.Values) (*ur
 		return nil, err
 	}
 	resolved := base.Clone()
-	resolved.RawQuery = requestURL.RawQuery
-	resolved.ForceQuery = requestURL.ForceQuery
+	resolved.ForceQuery = base.ForceQuery || requestURL.ForceQuery
 	resolved.Fragment = requestURL.Fragment
+	addQueryValues(resolved, requestQuery)
 
 	path, rawPath, err := joinEscapedURLPath(base.EscapedPath(), requestURL.EscapedPath())
 	if err != nil {

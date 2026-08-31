@@ -199,7 +199,6 @@ func TestWithProxyBypassUsesExampleHost(t *testing.T) {
 	resp, err := client.Get("/").Send(t.Context())
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
-	defer resp.Close() //nolint:errcheck // test cleanup closes response body
 	assert.Empty(t, resp.Header().Get("X-Test-Proxy"))
 }
 

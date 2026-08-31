@@ -92,7 +92,6 @@ func TestMiddlewareShortCircuitClosesStreamingMultipartBody(t *testing.T) {
 				if test.wantErr == nil {
 					require.NoError(t, err)
 					assert.Equal(t, 0, resp.Attempts())
-					require.NoError(t, resp.Close())
 				} else {
 					assert.Nil(t, resp)
 					assert.ErrorIs(t, err, test.wantErr)
@@ -241,9 +240,8 @@ func TestOrderedHeadersAttachMetadataAndApplyHeaders(t *testing.T) {
 	req := client.Get(server.URL).OrderedHeaders(headers)
 	headers.Set("X-First", []string{"mutated"})
 
-	resp, err := req.Send(context.Background())
+	_, err := req.Send(context.Background())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }
 
 func TestOrderedHeadersCaseInsensitiveDuplicatesDoNotLeakAfterOverride(t *testing.T) {
@@ -272,12 +270,11 @@ func TestOrderedHeadersCaseInsensitiveDuplicatesDoNotLeakAfterOverride(t *testin
 		}
 	})
 
-	resp, err := client.Get(server.URL).
+	_, err := client.Get(server.URL).
 		OrderedHeaders(headers).
 		Header("x-dupe", "request").
 		Send(t.Context())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }
 
 func TestOrderedHeadersNilClearsRequestHeaders(t *testing.T) {
@@ -299,12 +296,11 @@ func TestOrderedHeadersNilClearsRequestHeaders(t *testing.T) {
 		}
 	})
 
-	resp, err := client.Get(server.URL).
+	_, err := client.Get(server.URL).
 		OrderedHeaders(headers).
 		OrderedHeaders(nil).
 		Send(t.Context())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }
 
 func TestSetDefaultOrderedHeadersNilClearsDefaults(t *testing.T) {
@@ -327,9 +323,8 @@ func TestSetDefaultOrderedHeadersNilClearsDefaults(t *testing.T) {
 		}
 	})
 
-	resp, err := client.Get(server.URL).Send(t.Context())
+	_, err := client.Get(server.URL).Send(t.Context())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }
 
 func TestOrderedHeadersMergeClientDefaultsAndRequestOverrides(t *testing.T) {
@@ -375,9 +370,8 @@ func TestOrderedHeadersMergeClientDefaultsAndRequestOverrides(t *testing.T) {
 	req := client.Get(server.URL).OrderedHeaders(requestHeaders)
 	requestHeaders.Set("X-Shared", []string{"mutated"})
 
-	resp, err := req.Send(context.Background())
+	_, err := req.Send(context.Background())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }
 
 func TestOrderedHeadersStaySyncedWithHeaderHelpers(t *testing.T) {
@@ -427,7 +421,7 @@ func TestOrderedHeadersStaySyncedWithHeaderHelpers(t *testing.T) {
 		}
 	})
 
-	resp, err := client.Post(server.URL).
+	_, err := client.Post(server.URL).
 		OrderedHeaders(headers).
 		Header("x-first", "2").
 		AddHeader("X-FIRST", "3").
@@ -441,7 +435,6 @@ func TestOrderedHeadersStaySyncedWithHeaderHelpers(t *testing.T) {
 		JSON(map[string]string{"hello": "world"}).
 		Send(context.Background())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }
 
 func TestOrderedHeadersStaySyncedWithTextContentType(t *testing.T) {
@@ -467,12 +460,11 @@ func TestOrderedHeadersStaySyncedWithTextContentType(t *testing.T) {
 		}
 	})
 
-	resp, err := client.Post(server.URL).
+	_, err := client.Post(server.URL).
 		OrderedHeaders(headers).
 		Text("hello").
 		Send(context.Background())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }
 
 func TestOrderedHeadersDropClientMetadataWhenPlainRequestHeaderOverrides(t *testing.T) {
@@ -497,9 +489,8 @@ func TestOrderedHeadersDropClientMetadataWhenPlainRequestHeaderOverrides(t *test
 		}
 	})
 
-	resp, err := client.Get(server.URL).Header("X-Shared", "request").Send(context.Background())
+	_, err := client.Get(server.URL).Header("X-Shared", "request").Send(context.Background())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }
 
 func TestHeadersPreserveMultipleValuesWhenOverridingOrderedDefaults(t *testing.T) {
@@ -527,11 +518,10 @@ func TestHeadersPreserveMultipleValuesWhenOverridingOrderedDefaults(t *testing.T
 		}
 	})
 
-	resp, err := client.Get("https://example.com").
+	_, err := client.Get("https://example.com").
 		Headers(http.Header{"X-Multi": []string{"one", "two"}}).
 		Send(t.Context())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }
 
 func TestMetadataPrecedenceClientAuthOverridesClientHeader(t *testing.T) {
@@ -547,9 +537,8 @@ func TestMetadataPrecedenceClientAuthOverridesClientHeader(t *testing.T) {
 		WithHeaders(http.Header{"Authorization": {"client-header"}}),
 		WithBearerAuth("client-token"),
 	)
-	resp, err := client.Get("/").Send(t.Context())
+	_, err := client.Get("/").Send(t.Context())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }
 
 func TestMetadataPrecedenceRequestHeadersOverrideClientAuth(t *testing.T) {
@@ -565,11 +554,10 @@ func TestMetadataPrecedenceRequestHeadersOverrideClientAuth(t *testing.T) {
 		WithHeaders(http.Header{"Authorization": {"client-header"}}),
 		WithBearerAuth("client-token"),
 	)
-	resp, err := client.Get("/").Headers(http.Header{
+	_, err := client.Get("/").Headers(http.Header{
 		"authorization": {"request-first", "request-second"},
 	}).Send(t.Context())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }
 
 func TestMetadataPrecedenceRequestAuthSynchronizesOrderedAuthorization(t *testing.T) {
@@ -602,13 +590,12 @@ func TestMetadataPrecedenceRequestAuthSynchronizesOrderedAuthorization(t *testin
 		})),
 	)
 
-	resp, err := client.Get("https://example.com").
+	_, err := client.Get("https://example.com").
 		OrderedHeaders(requestOrdered).
 		Auth(BearerAuth{Token: "request-token"}).
 		Send(t.Context())
 
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }
 
 func TestMetadataPrecedenceClientAuthSynchronizesOrderedAuthorization(t *testing.T) {
@@ -638,9 +625,8 @@ func TestMetadataPrecedenceClientAuthSynchronizesOrderedAuthorization(t *testing
 		})),
 	)
 
-	resp, err := client.Get("https://example.com").Send(t.Context())
+	_, err := client.Get("https://example.com").Send(t.Context())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }
 
 func TestMetadataPrecedenceRequestCookiesOverrideByName(t *testing.T) {
@@ -669,12 +655,11 @@ func TestMetadataPrecedenceRequestCookiesOverrideByName(t *testing.T) {
 			"shared":  "client",
 		}),
 	)
-	resp, err := client.Get("/").
+	_, err := client.Get("/").
 		Cookie("shared", "request").
 		Cookie("local", "request").
 		Send(t.Context())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }
 
 func TestMetadataPrecedenceSynchronizesOrderedCookies(t *testing.T) {
@@ -705,13 +690,12 @@ func TestMetadataPrecedenceSynchronizesOrderedCookies(t *testing.T) {
 		})),
 	)
 
-	resp, err := client.Get("https://example.com").
+	_, err := client.Get("https://example.com").
 		OrderedHeaders(requestOrdered).
 		Cookie("local", "request").
 		Send(t.Context())
 
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }
 
 func TestMetadataPrecedencePreservesMiddlewareRetryCadence(t *testing.T) {
@@ -761,11 +745,11 @@ func TestRequestCancellation(t *testing.T) {
 
 	client := newTestClient(t, WithBaseURL(server.URL))
 	ctx, cancel := context.WithCancelCause(context.Background())
-	cancel(ErrTestTimeout)
+	cancel(errTestTimeout)
 
 	_, err := client.Get("/").Send(ctx)
 	require.Error(t, err)
-	assert.ErrorIs(t, context.Cause(ctx), ErrTestTimeout)
+	assert.ErrorIs(t, context.Cause(ctx), errTestTimeout)
 }
 
 // TestSendMethodQuery checks the Send method for handling query parameters.
@@ -971,6 +955,24 @@ func TestSendInvalidResolvedURLDoesNotDispatch(t *testing.T) {
 	assert.False(t, called.Load())
 }
 
+func TestSendMalformedRequestQueryDoesNotDispatch(t *testing.T) {
+	var called atomic.Bool
+	client := newTestClient(t, WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+		called.Store(true)
+		return nil, nil
+	})))
+
+	_, err := client.Get("https://example.test/path?tenant=acme;marker=secret").
+		Query("q", "hello").
+		Send(t.Context())
+
+	assert.ErrorIs(t, err, ErrRequestCreationFailed)
+	if err != nil {
+		assert.NotContains(t, err.Error(), "secret")
+	}
+	assert.False(t, called.Load())
+}
+
 func TestSendURLDiagnosticRedaction(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1082,9 +1084,6 @@ func TestQueryStructWithClient(t *testing.T) {
 	assert.Equal(t, []string{"1"}, response["is_active"])
 	assert.Contains(t, response, "tags")
 	assert.Equal(t, []string{"go,programming"}, response["tags"])
-
-	err = resp.Close()
-	assert.NoError(t, err)
 }
 
 type failingQueryValue struct{}
@@ -1119,18 +1118,10 @@ func (e countingEncoder) Encode(any) (io.Reader, error) {
 	return strings.NewReader("{}"), nil
 }
 
-func (countingEncoder) ContentType() string {
-	return "application/json"
-}
-
 type readErrorEncoder struct{}
 
 func (readErrorEncoder) Encode(any) (io.Reader, error) {
 	return failingReader{}, nil
-}
-
-func (readErrorEncoder) ContentType() string {
-	return "application/json"
 }
 
 type closeObservingReader struct {
@@ -1154,8 +1145,58 @@ func (e closeObservingEncoder) Encode(any) (io.Reader, error) {
 	}, nil
 }
 
-func (closeObservingEncoder) ContentType() string {
-	return "application/json"
+type encodeOnlyEncoder struct{}
+
+func (encodeOnlyEncoder) Encode(any) (io.Reader, error) {
+	return strings.NewReader(`{"encoded":true}`), nil
+}
+
+func TestEncodeOnlyCustomEncoderUsesTypedBodyMediaType(t *testing.T) {
+	request := make(chan struct {
+		body        string
+		contentType string
+	}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		request <- struct {
+			body        string
+			contentType string
+		}{body: string(body), contentType: r.Header.Get("Content-Type")}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	tests := []struct {
+		name        string
+		option      Option
+		body        func(*RequestBuilder) *RequestBuilder
+		contentType string
+	}{
+		{name: "JSON", option: WithJSONEncoder(encodeOnlyEncoder{}), body: func(b *RequestBuilder) *RequestBuilder { return b.JSON(struct{}{}) }, contentType: "application/json"},
+		{name: "XML", option: WithXMLEncoder(encodeOnlyEncoder{}), body: func(b *RequestBuilder) *RequestBuilder { return b.XML(struct{}{}) }, contentType: "application/xml"},
+		{name: "YAML", option: WithYAMLEncoder(encodeOnlyEncoder{}), body: func(b *RequestBuilder) *RequestBuilder { return b.YAML(struct{}{}) }, contentType: "application/yaml"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := newTestClient(t, WithBaseURL(server.URL), test.option)
+			response, err := test.body(client.Post("/")).Send(t.Context())
+			require.NoError(t, err)
+			require.Equal(t, http.StatusNoContent, response.StatusCode())
+			got := <-request
+			assert.Equal(t, `{"encoded":true}`, got.body)
+			assert.Equal(t, test.contentType, got.contentType)
+		})
+	}
+
+	client := newTestClient(t, WithBaseURL(server.URL), WithJSONEncoder(encodeOnlyEncoder{}))
+	response, err := client.Post("/").JSON(struct{}{}).ContentType("application/custom").Send(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNoContent, response.StatusCode())
+	got := <-request
+	assert.Equal(t, `{"encoded":true}`, got.body)
+	assert.Equal(t, "application/custom", got.contentType)
 }
 
 func TestCustomEncoderReaderLifecycleIsReadOnly(t *testing.T) {
@@ -2770,7 +2811,6 @@ func TestRetrySkipsCleanupForRedirectErrorResponse(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode())
 	assert.Equal(t, int32(2), attempts.Load())
 	assert.True(t, redirectBody.closed.Load())
-	require.NoError(t, resp.Close())
 }
 
 func TestRequestLevelRetries(t *testing.T) {
@@ -2880,7 +2920,6 @@ func TestAuthRequest(t *testing.T) {
 		// If there's an error sending the request, fail the test.
 		t.Fatalf("Failed to send request: %v", err)
 	}
-	defer resp.Close() //nolint:errcheck // test cleanup closes response body
 
 	// Check if the response status code is 200 OK, which indicates successful authentication.
 	if resp.StatusCode() != http.StatusOK {

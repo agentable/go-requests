@@ -389,9 +389,3 @@ func (r *Response) Lines() iter.Seq[[]byte] {
 		}
 	}
 }
-
-// Close closes the replacement reader over the buffered body.
-// Send has already closed the transport body before returning the Response.
-func (r *Response) Close() error {
-	return r.rawResponse.Body.Close()
-}

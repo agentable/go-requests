@@ -27,11 +27,6 @@ func (e *YAMLEncoder) Encode(v any) (io.Reader, error) {
 	return bytes.NewReader(data), nil
 }
 
-// ContentType returns the content type for YAML data.
-func (e *YAMLEncoder) ContentType() string {
-	return "application/yaml;charset=utf-8"
-}
-
 // YAMLDecoder handles decoding of YAML data.
 type YAMLDecoder struct {
 	DecodeFunc func(r io.Reader, v any) error // DecodeFunc decodes YAML data into a value.

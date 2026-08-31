@@ -29,9 +29,8 @@ transport body exactly once and returns no partial `Response`. The error matches
 limit plus one proof byte. Ordinary read failures continue to wrap
 `ErrResponseReadFailed`, including cancellation causes.
 
-Callers do not need to call `Response.Close` for connection reuse.
-`Response.Close` only closes the replacement reader over buffered bytes;
-caller-owned transport cleanup belongs exclusively to `StreamResponse`.
+`Response` has no `Close` method because it owns no live transport resource.
+Caller-owned response-body cleanup belongs exclusively to `StreamResponse`.
 
 > **Why**: Buffered helpers and caller-owned streaming solve different workloads. Keeping them separate avoids ambiguous ownership of the response body.
 >
@@ -53,7 +52,7 @@ verify that a positive buffering limit does not pre-read or truncate streams.
 - `ContentType`, `IsContentType`, `IsJSON`, `IsXML`, `IsYAML`
 - `ContentLength`, `IsEmpty`
 - `IsSuccess`, `IsError`, `IsClientError`, `IsServerError`, `IsRedirect`
-- `Bytes`, `String`, `Close`
+- `Bytes`, `String`
 
 These helpers describe response metadata only. They do not change delivery behavior.
 `Header()` and `URL()` return snapshots; intentional mutation goes through `Raw()`.
@@ -114,6 +113,7 @@ line, and a trailing newline follow `bufio.ScanLines` semantics.
 
 - Do not call `Decode` and expect fallback decoding for unsupported content types.
 - Do not pass unsupported target types to `Save`.
+- Do not add a no-op or replacement-reader `Close` method to buffered `Response`.
 - Do not treat an oversize buffered response as truncated success; use
   `SendStream` when the caller intentionally owns partial reads.
 

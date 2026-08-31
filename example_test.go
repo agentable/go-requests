@@ -36,7 +36,6 @@ func ExampleClient_Get() {
 		fmt.Println("request error:", err)
 		return
 	}
-	defer func() { _ = resp.Close() }()
 
 	var p post
 	if err := resp.DecodeJSON(&p); err != nil {

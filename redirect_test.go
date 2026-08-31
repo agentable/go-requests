@@ -28,10 +28,6 @@ func (limitedJSONEncoder) Encode(any) (io.Reader, error) {
 	return &io.LimitedReader{R: strings.NewReader(payload), N: int64(len(payload))}, nil
 }
 
-func (limitedJSONEncoder) ContentType() string {
-	return "application/json"
-}
-
 type redirectObservation struct {
 	method          string
 	body            string
@@ -103,7 +99,6 @@ func TestAllowRedirectPolicyMatchesNetHTTPConstruction(t *testing.T) {
 			Cookie("session", "cookie").
 			Send(t.Context())
 		require.NoError(t, err)
-		require.NoError(t, resp.Close())
 		return resp.StatusCode()
 	})
 
@@ -159,7 +154,6 @@ func TestAllowRedirectPolicyMatchesNetHTTPTransitions(t *testing.T) {
 						}
 						resp, err := builder.Send(t.Context())
 						require.NoError(t, err)
-						require.NoError(t, resp.Close())
 						return resp.StatusCode()
 					})
 
@@ -294,7 +288,6 @@ func TestRedirectPolicies(t *testing.T) {
 
 		assert.NoError(t, err, "Expected no errors")
 		assert.Equal(t, http.StatusOK, resp.StatusCode(), "Expected status code to be 200")
-		defer resp.Close() //nolint:errcheck // test cleanup closes response body
 	})
 
 	t.Run("AllowRedirectPolicy-ExceedsLimit", func(t *testing.T) {
@@ -316,7 +309,6 @@ func TestRedirectPolicies(t *testing.T) {
 
 		assert.NoError(t, err, "Expected no errors")
 		assert.Equal(t, http.StatusOK, resp.StatusCode(), "Expected status code to be 200")
-		defer resp.Close() //nolint:errcheck // test cleanup closes response body
 	})
 
 	t.Run("RedirectSpecifiedDomainPolicy-ProhibitDomain", func(t *testing.T) {
@@ -353,7 +345,6 @@ func TestRedirectPolicyUsesExampleHost(t *testing.T) {
 
 	resp, err := client.Get("/redirect").Send(t.Context())
 	assert.NoError(t, err)
-	defer resp.Close() //nolint:errcheck // test cleanup closes response body
 	assert.Equal(t, http.StatusOK, resp.StatusCode())
 	assert.Equal(t, []string{"api.example.com", "api.example.com"}, hosts)
 }
@@ -401,14 +392,13 @@ func TestRedirectClientStripsCredentialsAcrossOrigins(t *testing.T) {
 	defer source.Close()
 
 	client := newTestClient(t, WithRedirectPolicy(allowAllRedirects{}))
-	resp, err := client.Get(source.URL).
+	_, err := client.Get(source.URL).
 		Header("Authorization", "Bearer secret").
 		Header("Proxy-Authorization", "Basic c2VjcmV0").
 		Header("Cookie", "manual=source").
 		Header("X-Trace", "trace").
 		Send(t.Context())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 
 	got := <-received
 	assert.Empty(t, got.authorization)
@@ -467,13 +457,12 @@ func headersAfterRedirect(t *testing.T, sourceURL, destinationURL string) http.H
 		WithRedirectPolicy(NewAllowRedirectPolicy(5)),
 	)
 
-	resp, err := client.Get(sourceURL).
+	_, err := client.Get(sourceURL).
 		Header("Authorization", "Bearer secret").
 		Header("Proxy-Authorization", "Basic c2VjcmV0").
 		Header("X-Trace", "trace").
 		Send(t.Context())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 	require.NotNil(t, destinationHeaders)
 	return destinationHeaders
 }
@@ -594,11 +583,10 @@ func TestRedirectCredentialPolicyLeavesCookieScopeToNetHTTP(t *testing.T) {
 		WithRedirectPolicy(NewAllowRedirectPolicy(5)),
 	)
 
-	resp, err := client.Get("https://source.example/start").
+	_, err = client.Get("https://source.example/start").
 		Cookie("manual", "source").
 		Send(t.Context())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 	require.NotNil(t, destinationHeaders)
 	assert.Equal(t, "target=cookie", destinationHeaders.Get("Cookie"))
 }

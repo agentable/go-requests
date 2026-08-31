@@ -83,6 +83,9 @@ are not another spelling for the zero-retry default.
 | `XMLEncoder` / `XMLDecoder` | private client-local `XMLEncoder` / `XMLDecoder` | `client.go: newClient` | Same. |
 | `YAMLEncoder` / `YAMLDecoder` | private client-local `YAMLEncoder` / `YAMLDecoder` (`goccy/go-yaml`) | `client.go: newClient` | Same. |
 
+Encoder implementations own payload production through `Encode`; typed body
+helpers own their wire `Content-Type`.
+
 ## Headers, Cookies, Body
 
 | Field | Default | Source | Why |
@@ -109,13 +112,13 @@ are not another spelling for the zero-retry default.
 | Field | Default | Source | Why |
 |---|---|---|---|
 | `WithHTTP2` | not applied | `client_option.go` / `transport.go` | The Go standard library already negotiates HTTP/2 over TLS by default; this option is a manual override for callers who want explicit HTTP/2 transport. |
-| HTTP/3 | not enabled | `http3/` extension | HTTP/3 is opt in via the extension module. The core does not link `quic-go`. |
+| HTTP/3 | not enabled | `http3/` extension | HTTP/3 is opt in through an explicit caller-owned transport. The core does not link `quic-go`, and the caller closes the transport after every user is done. |
 
 ## Profiles
 
 | Field | Default | Source | Why |
 |---|---|---|---|
-| `WithProfile` | not applied | `client_option.go` / `profile.go` | Browser-like headers, uTLS fingerprints, and HTTP/3 are opt in via `Profile`. The core has no implicit identity. |
+| `WithProfile` | not applied | `client_option.go` / `profile.go` | Browser-like headers and uTLS fingerprints are opt in via `Profile`. The core has no implicit identity. |
 
 ## Stability Rules
 

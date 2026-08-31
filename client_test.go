@@ -463,7 +463,6 @@ func TestSetAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to send request: %v", err)
 	}
-	defer resp.Close() //nolint:errcheck // test cleanup closes response body
 
 	// Check the response status code.
 	if resp.StatusCode() != http.StatusOK {
@@ -617,13 +616,11 @@ func TestCookieJarUsesExampleDomainRules(t *testing.T) {
 
 	client := newTestClient(t, WithHTTPClient(server.Client()), WithCookieJar(jar))
 
-	resp, err := client.Get("https://api.example.com/set-cookie").Send(t.Context())
+	_, err = client.Get("https://api.example.com/set-cookie").Send(t.Context())
 	require.NoError(t, err)
-	defer resp.Close() //nolint:errcheck // test cleanup closes response body
 
-	resp, err = client.Get("https://cdn.example.com/check-cookie").Send(t.Context())
+	_, err = client.Get("https://cdn.example.com/check-cookie").Send(t.Context())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }
 
 func TestSetDefaultCookies(t *testing.T) {
@@ -685,7 +682,6 @@ func TestClientUsesExampleHostWithTLSServer(t *testing.T) {
 
 	resp, err := client.Get("/status").Send(t.Context())
 	require.NoError(t, err)
-	defer resp.Close() //nolint:errcheck // test cleanup closes response body
 	assert.Equal(t, http.StatusOK, resp.StatusCode())
 }
 
@@ -815,12 +811,12 @@ func TestErrorIntrospection(t *testing.T) {
 	})
 
 	t.Run("IsConnectionError with OpError", func(t *testing.T) {
-		opErr := &net.OpError{Op: "dial", Err: ErrTestTimeout}
+		opErr := &net.OpError{Op: "dial", Err: errTestTimeout}
 		assert.True(t, IsConnectionError(opErr))
 	})
 
 	t.Run("IsConnectionError with wrapped OpError", func(t *testing.T) {
-		opErr := &net.OpError{Op: "dial", Err: ErrTestTimeout}
+		opErr := &net.OpError{Op: "dial", Err: errTestTimeout}
 		wrapped := fmt.Errorf("request failed: %w", opErr)
 		assert.True(t, IsConnectionError(wrapped))
 	})
@@ -886,7 +882,6 @@ func TestHttp2Scenarios(t *testing.T) {
 				t.Fatalf("Unexpected error: %v", err)
 				return
 			}
-			defer resp.Close() //nolint:errcheck // test cleanup closes response body
 			assert.Equal(t, tt.expectedVersion, resp.Raw().Proto, "Protocol version mismatch")
 		})
 	}

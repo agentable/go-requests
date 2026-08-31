@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -51,119 +52,13 @@ func TestTransportOptions(t *testing.T) {
 	require.Equal(t, uint64(1), transport.AdditionalSettings[0x21])
 }
 
-func TestProfileAppliesHTTP3Transport(t *testing.T) {
-	profile := Profile()
-	client, err := requests.New(requests.WithProfile(profile))
-	require.NoError(t, err)
-
-	require.Equal(t, "HTTP/3", profile.Name())
-	_, ok := client.UnsafeHTTPClient().Transport.(*qhttp3.Transport)
-	require.True(t, ok)
-}
-
-func TestOptionsIgnoreNil(t *testing.T) {
-	client, err := requests.New(requests.WithProfile(Profile(nil, WithDatagrams())))
-	require.NoError(t, err)
-	profileTransport, ok := client.UnsafeHTTPClient().Transport.(*qhttp3.Transport)
-	require.True(t, ok)
-	require.True(t, profileTransport.EnableDatagrams)
-
+func TestTransportOptionsIgnoreNil(t *testing.T) {
 	transport := Transport(nil, WithDatagrams())
 	require.NotNil(t, transport)
 	require.True(t, transport.EnableDatagrams)
 }
 
-func TestProfileUsesClientTLSConfig(t *testing.T) {
-	tlsConfig := &tls.Config{ServerName: "example.com", MinVersion: tls.VersionTLS13}
-	client, err := requests.New(
-		requests.WithTLSConfig(tlsConfig),
-		requests.WithProfile(Profile()),
-	)
-	require.NoError(t, err)
-
-	transport, ok := client.UnsafeHTTPClient().Transport.(*qhttp3.Transport)
-	require.True(t, ok)
-	require.False(t, tlsConfig == transport.TLSClientConfig)
-	require.Equal(t, "example.com", transport.TLSClientConfig.ServerName)
-}
-
-func TestProfileCapturesTLSConfig(t *testing.T) {
-	tlsConfig := &tls.Config{ServerName: "initial.example.com", MinVersion: tls.VersionTLS13}
-	profile := Profile(WithTLSConfig(tlsConfig))
-	tlsConfig.ServerName = "mutated.example.com"
-
-	client, err := requests.New(requests.WithProfile(profile))
-	require.NoError(t, err)
-	transport, ok := client.UnsafeHTTPClient().Transport.(*qhttp3.Transport)
-	require.True(t, ok)
-	require.False(t, tlsConfig == transport.TLSClientConfig)
-	require.Equal(t, "initial.example.com", transport.TLSClientConfig.ServerName)
-}
-
-func TestProfileRejectsTLSConfigAppliedAfterHTTP3(t *testing.T) {
-	client, err := requests.New(
-		requests.WithProfile(Profile()),
-		requests.WithTLSConfig(&tls.Config{ServerName: "example.com"}),
-	)
-
-	require.Nil(t, client)
-	require.True(t, errors.Is(err, requests.ErrInvalidTransportType))
-}
-
-func TestProfileRejectsSessionAppliedAfterHTTP3(t *testing.T) {
-	client, err := requests.New(
-		requests.WithProfile(Profile()),
-		requests.WithSession(),
-	)
-
-	require.Nil(t, client)
-	require.True(t, errors.Is(err, requests.ErrInvalidTransportType))
-}
-
-func TestProfileRejectsTLSMutationAppliedAfterHTTP3(t *testing.T) {
-	client, err := requests.New(
-		requests.WithProfile(Profile()),
-		requests.WithInsecureSkipVerify(),
-	)
-
-	require.Nil(t, client)
-	require.True(t, errors.Is(err, requests.ErrInvalidTransportType))
-}
-
-func TestProfileRejectsUnsupportedOptionsAppliedAfterHTTP3(t *testing.T) {
-	tests := []struct {
-		name   string
-		option requests.Option
-	}{
-		{name: "certificates", option: requests.WithCertificates(tls.Certificate{})},
-		{name: "TLS server name", option: requests.WithTLSServerName("example.com")},
-		{name: "root certificate", option: requests.WithRootCertificate("../.github/testdata/cert.pem")},
-		{name: "dial timeout", option: requests.WithDialTimeout(time.Second)},
-		{name: "proxy", option: requests.WithProxy("http://proxy.example.com:8080")},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			client, err := requests.New(requests.WithProfile(Profile()), test.option)
-
-			require.Nil(t, client)
-			require.True(t, errors.Is(err, requests.ErrInvalidTransportType))
-		})
-	}
-}
-
-func TestProfileUsesSessionConfiguredBeforeHTTP3(t *testing.T) {
-	client, err := requests.New(requests.WithSession(), requests.WithProfile(Profile()))
-	require.NoError(t, err)
-
-	transport, ok := client.UnsafeHTTPClient().Transport.(*qhttp3.Transport)
-	require.True(t, ok)
-	require.NotNil(t, client.UnsafeHTTPClient().Jar)
-	require.NotNil(t, transport.TLSClientConfig)
-	require.NotNil(t, transport.TLSClientConfig.ClientSessionCache)
-}
-
-func TestProfileSendsHTTP3Request(t *testing.T) {
+func TestTransportSendsHTTP3RequestAndClosesConcurrently(t *testing.T) {
 	source := httptest.NewTLSServer(http.NotFoundHandler())
 	cert := source.TLS.Certificates[0]
 	source.Close()
@@ -177,7 +72,10 @@ func TestProfileSendsHTTP3Request(t *testing.T) {
 			NextProtos:   []string{qhttp3.NextProtoH3},
 		},
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			require.Equal(t, "HTTP/3.0", r.Proto)
+			if r.Proto != "HTTP/3.0" {
+				w.WriteHeader(http.StatusHTTPVersionNotSupported)
+				return
+			}
 			_, _ = w.Write([]byte("h3"))
 		}),
 	}
@@ -192,17 +90,35 @@ func TestProfileSendsHTTP3Request(t *testing.T) {
 		require.True(t, errors.Is(<-errCh, http.ErrServerClosed))
 	})
 
-	client, err := requests.New(requests.WithProfile(Profile(WithTLSConfig(&tls.Config{
+	transport := Transport(WithTLSConfig(&tls.Config{
 		InsecureSkipVerify: true,
-	}))))
+	}))
+	t.Cleanup(func() { _ = transport.Close() })
+	client, err := requests.New(requests.WithTransport(transport))
 	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
 	resp, err := client.Get("https://" + packetConn.LocalAddr().String()).Send(ctx)
 	require.NoError(t, err)
-	defer resp.Close() //nolint:errcheck // test cleanup closes response body
 	require.Equal(t, http.StatusOK, resp.StatusCode())
 	require.Equal(t, "HTTP/3.0", resp.Protocol())
 	require.Equal(t, "h3", resp.String())
+
+	closeErrors := make(chan error, 8)
+	var closeGroup sync.WaitGroup
+	for range 8 {
+		closeGroup.Go(func() {
+			closeErrors <- transport.Close()
+		})
+	}
+	closeGroup.Wait()
+	close(closeErrors)
+	for closeErr := range closeErrors {
+		require.NoError(t, closeErr)
+	}
+
+	resp, err = client.Get("https://" + packetConn.LocalAddr().String()).Send(ctx)
+	require.Nil(t, resp)
+	require.True(t, errors.Is(err, qhttp3.ErrTransportClosed))
 }

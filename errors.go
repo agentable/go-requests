@@ -108,10 +108,6 @@ var (
 	// when the redirect target host is not in the allow-list.
 	ErrRedirectNotAllowed = errors.New("redirect not allowed")
 
-	// ErrTestTimeout is reserved for use by the package's own tests. It is
-	// not produced by Send.
-	ErrTestTimeout = errors.New("test timeout: request took too long")
-
 	// ErrInvalidConfigValue is returned by construction options and fluent
 	// request helpers when a value cannot be applied. Wrapped errors name the
 	// offending option or request setting.

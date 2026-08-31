@@ -35,7 +35,15 @@ A builder MAY define:
 
 Path parameters use `{name}` placeholders and MUST be URL-path-escaped before dispatch.
 
-Dispatch uses one resolver for base URL, request path, path params, absolute URLs, and query composition. Base URL paths and request paths are joined without accidental slash loss or duplication. Builder query values are appended to any existing raw query values, so repeated keys remain repeated.
+Dispatch uses one resolver for base URL, request path, path params, absolute
+URLs, and query composition. Base URL paths and request paths are joined without
+accidental slash loss or duplication. For a relative request path, query values
+from the base URL, request path, and builder are combined in that order. Values
+are appended rather than replaced, so repeated keys remain repeated. An
+absolute request URL overrides both the base path and base query.
+
+Malformed request-path query syntax fails URL preflight with
+`ErrRequestCreationFailed` before body preparation or transport dispatch.
 
 ## Request Metadata
 

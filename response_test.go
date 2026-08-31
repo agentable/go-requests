@@ -562,18 +562,6 @@ func TestResponseDecodeUnsupportedContentType(t *testing.T) {
 	assert.ErrorIs(t, err, ErrUnsupportedContentType)
 }
 
-func TestResponseClose(t *testing.T) {
-	server := startTestHTTPServer()
-	defer server.Close()
-
-	client := newTestClient(t, WithBaseURL(server.URL))
-	resp, err := client.Get("/test-get").Send(context.Background())
-	assert.NoError(t, err)
-
-	err = resp.Close()
-	assert.NoError(t, err, "expected no error when closing the response")
-}
-
 func TestResponseURL(t *testing.T) {
 	server := startTestHTTPServer()
 	defer server.Close()
@@ -1157,7 +1145,6 @@ func TestBufferedResponseClosesBodyAfterSuccessfulRead(t *testing.T) {
 	rawBody, err := io.ReadAll(resp.Raw().Body)
 	require.NoError(t, err)
 	assert.Equal(t, payload, rawBody)
-	require.NoError(t, resp.Close())
 	assert.Equal(t, 1, body.closeCount)
 }
 

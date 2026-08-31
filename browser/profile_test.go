@@ -54,9 +54,8 @@ func TestChrome145Profile(t *testing.T) {
 	require.NotNil(t, transport.TLSClientConfig)
 	require.True(t, slices.Contains(transport.TLSClientConfig.NextProtos, "h2"))
 
-	resp, err := client.Get(server.URL).Send(t.Context())
+	_, err = client.Get(server.URL).Send(t.Context())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }
 
 func TestChrome145ProfileUsesExampleHostOverTLS(t *testing.T) {
@@ -75,9 +74,8 @@ func TestChrome145ProfileUsesExampleHostOverTLS(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	resp, err := client.Get("https://www.example.com").Send(t.Context())
+	_, err = client.Get("https://www.example.com").Send(t.Context())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }
 
 func TestFirefox148Profile(t *testing.T) {
@@ -99,9 +97,8 @@ func TestFirefox148Profile(t *testing.T) {
 	require.True(t, ok)
 	require.True(t, transport.ForceAttemptHTTP2)
 
-	resp, err := client.Get(server.URL).Send(t.Context())
+	_, err = client.Get(server.URL).Send(t.Context())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }
 
 func TestProfileRequestHeadersOverrideDefaults(t *testing.T) {
@@ -124,7 +121,6 @@ func TestProfileRequestHeadersOverrideDefaults(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	resp, err := client.Get(server.URL).UserAgent("CustomAgent/1.0").Send(t.Context())
+	_, err = client.Get(server.URL).UserAgent("CustomAgent/1.0").Send(t.Context())
 	require.NoError(t, err)
-	require.NoError(t, resp.Close())
 }

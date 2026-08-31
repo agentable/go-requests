@@ -7,7 +7,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/cookiejar"
+	"net/url"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -59,7 +61,7 @@ type clientSnapshot struct {
 }
 
 // New creates a Client with functional options applied.
-// It returns an error when any option cannot be applied.
+// It returns an error when an option or the final option combination is invalid.
 func New(opts ...Option) (*Client, error) {
 	c := newClient()
 	for _, opt := range opts {
@@ -70,10 +72,14 @@ func New(opts ...Option) (*Client, error) {
 			return nil, err
 		}
 	}
+	if err := c.validate(); err != nil {
+		return nil, err
+	}
 	return c, nil
 }
 
-// Clone returns a new Client with the current defaults plus opts applied.
+// Clone returns a new Client with the current defaults plus opts applied and
+// validated as one final configuration.
 func (c *Client) Clone(opts ...Option) (*Client, error) {
 	clone := c.clone()
 	for _, opt := range opts {
@@ -84,7 +90,41 @@ func (c *Client) Clone(opts ...Option) (*Client, error) {
 			return nil, err
 		}
 	}
+	if err := clone.validate(); err != nil {
+		return nil, err
+	}
 	return clone, nil
+}
+
+func (c *Client) validate() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.baseURL == "" {
+		return nil
+	}
+	baseURL, err := url.Parse(c.baseURL)
+	if err != nil {
+		return fmt.Errorf("%w: BaseURL: %w", ErrInvalidConfigValue, sanitizeURLDiagnosticError(err))
+	}
+	if !baseURL.IsAbs() || baseURL.Opaque != "" || baseURL.Host == "" {
+		return fmt.Errorf("%w: BaseURL must be an absolute hierarchical URL with a host", ErrInvalidConfigValue)
+	}
+	if baseURL.Fragment != "" {
+		return fmt.Errorf("%w: BaseURL must not contain a fragment", ErrInvalidConfigValue)
+	}
+	if _, err := url.ParseQuery(baseURL.RawQuery); err != nil {
+		return fmt.Errorf("%w: BaseURL query: %w", ErrInvalidConfigValue, err)
+	}
+
+	_, standardTransport := c.httpClient.Transport.(*http.Transport)
+	if c.httpClient.Transport == nil || standardTransport {
+		scheme := strings.ToLower(baseURL.Scheme)
+		if scheme != "http" && scheme != "https" {
+			return fmt.Errorf("%w: BaseURL scheme requires a custom transport", ErrInvalidConfigValue)
+		}
+	}
+	return nil
 }
 
 func newClient() *Client {

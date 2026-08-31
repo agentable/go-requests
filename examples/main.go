@@ -58,7 +58,6 @@ func fetchPost(ctx context.Context, baseURL, postID string) (Post, error) {
 	if err != nil {
 		return Post{}, fmt.Errorf("failed to make request: %w", err)
 	}
-	defer func() { _ = resp.Close() }()
 
 	var post Post
 	if err := resp.DecodeJSON(&post); err != nil {

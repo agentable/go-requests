@@ -28,11 +28,6 @@ func (e *JSONEncoder) Encode(v any) (io.Reader, error) {
 	return bytes.NewReader(data), nil
 }
 
-// ContentType returns the content type for JSON data.
-func (e *JSONEncoder) ContentType() string {
-	return "application/json;charset=utf-8"
-}
-
 func jsonMarshal(v any) ([]byte, error) {
 	return json.Marshal(v)
 }

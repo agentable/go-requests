@@ -267,7 +267,7 @@ func (b *RequestBuilder) prepareRequest(ctx context.Context) (*http.Request, cli
 		if snap.logger != nil {
 			snap.logger.Errorf("Error parsing URL: %v", err)
 		}
-		return nil, snap, nil, start, err
+		return nil, snap, nil, start, fmt.Errorf("%w: %w", ErrRequestCreationFailed, err)
 	}
 
 	if _, err := http.NewRequestWithContext(ctx, b.method, parsedURL.String(), nil); err != nil {

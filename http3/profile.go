@@ -2,14 +2,11 @@ package http3
 
 import (
 	"crypto/tls"
-	"fmt"
 	"log/slog"
 	"maps"
 
 	"github.com/quic-go/quic-go"
 	qhttp3 "github.com/quic-go/quic-go/http3"
-
-	"github.com/agentable/go-requests"
 )
 
 type settings struct {
@@ -22,11 +19,7 @@ type settings struct {
 	logger                 *slog.Logger
 }
 
-type profile struct {
-	settings settings
-}
-
-// Option configures an HTTP/3 transport profile.
+// Option configures an HTTP/3 transport.
 type Option func(*settings)
 
 // WithTLSConfig captures a standard shallow clone for the HTTP/3 transport.
@@ -76,30 +69,6 @@ func WithLogger(logger *slog.Logger) Option {
 	return func(s *settings) {
 		s.logger = logger
 	}
-}
-
-// Profile returns an HTTP/3 client profile.
-func Profile(opts ...Option) requests.Profile {
-	return profile{settings: newSettings(opts...)}
-}
-
-func (p profile) Name() string {
-	return "HTTP/3"
-}
-
-func (p profile) Options() []requests.Option {
-	return []requests.Option{p.configure}
-}
-
-func (p profile) configure(c *requests.Client) error {
-	if c == nil {
-		return fmt.Errorf("%w: client", requests.ErrInvalidConfigValue)
-	}
-	settings := p.settings
-	if settings.tlsConfig == nil {
-		settings.tlsConfig = c.GetTLSConfig()
-	}
-	return requests.WithTransport(settings.transport())(c)
 }
 
 // Transport returns a configured HTTP/3 transport.

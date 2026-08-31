@@ -20,9 +20,13 @@ are the construction paths.
 - **Why**: Construction is the point where invalid base URLs, invalid proxy
   values, certificate file failures, profile option failures, and invalid
   numeric values should become caller-visible errors.
+- **Contract Impact**: Non-empty base URLs are absolute hierarchical URLs with
+  a host and no fragment. Their query values are preserved during request
+  composition. Standard transports require HTTP(S), while a custom transport
+  may support another scheme. Typed-nil collaborators fail construction.
 - **Rejected**: Parallel constructors, config structs, or best-effort public
   setters that let an invalid client exist and fail later at request time.
-- **Contract Impact**: Public examples and tests must use `New`, `Clone`, verb
+- **Contract Impact**: Public examples and tests use `New`, `Clone`, verb
   helpers, and `With*` options for client-level configuration.
 
 ### Explicit Body Language
@@ -44,12 +48,16 @@ concrete codec types and `With*Encoder` / `With*Decoder` options are public
 integration points; default instances are private client state.
 
 - **Why**: Mutable package-level defaults allow one caller to change unrelated
-  clients. A standalone form encoder duplicates the builder's explicit form
-  vocabulary without participating in the `Encoder` content-type contract.
+  clients. `Encoder` contains only `Encode` because typed body helpers, not the
+  encoder collaborator, own the wire media type. A standalone form encoder
+  duplicates the builder's explicit form vocabulary.
 - **Rejected**: Exported mutable `Default*Encoder` / `Default*Decoder` globals
-  and a standalone `FormEncoder` / `DefaultFormEncoder` path.
+  and a standalone `FormEncoder` / `DefaultFormEncoder` path; encoder
+  `ContentType` methods or optional side interfaces that create a second media
+  type owner.
 - **Contract Impact**: Construct codec values explicitly when customizing a
-  client. Build URL-encoded forms through `RequestBuilder` form helpers.
+  client. Custom encoders implement only `Encode`. Build URL-encoded forms
+  through `RequestBuilder` form helpers.
 
 ### Caller-Owned Streaming
 
@@ -60,7 +68,21 @@ returns `StreamResponse`, whose body remains open until the caller closes it.
   separate prevents hidden background readers and ambiguous body lifetime.
 - **Rejected**: A second streaming ownership model beside `SendStream`.
 - **Contract Impact**: Streaming helpers live on `StreamResponse`; buffered
-  decoding, saving, and buffered line iteration live on `Response`.
+  decoding, saving, and buffered line iteration live on `Response`. Buffered
+  `Response` has no `Close`; caller cleanup is required only for
+  `StreamResponse`.
+
+### Explicit Custom Transport Ownership
+
+`WithTransport` borrows a caller-supplied transport. Closable transports such
+as `http3.Transport(...)` remain visible handles owned by the caller.
+
+- **Why**: Clients, clones, and `AsHTTPClient` snapshots may share a custom
+  transport by identity. Root client cleanup cannot infer a unique owner.
+- **Rejected**: HTTP/3 profiles that hide the closable QUIC transport, root
+  `Client.Close`, owned-transport registries, reference counting, or finalizers.
+- **Contract Impact**: The caller closes a custom transport only after every
+  client, clone, snapshot, and in-flight request using it is done.
 
 ### Response Escape Hatches
 
@@ -143,6 +165,8 @@ These symbols remain public because they name real integration points:
 ## Forbidden
 
 - Do not add aliases for removed construction, body, streaming, or retry names.
+- Do not restore `Response.Close`, encoder `ContentType` methods,
+  `ErrTestTimeout`, or an HTTP/3 `Profile` compatibility path.
 - Do not restore request-builder cloning, cache middleware, standalone form
   encoders, or mutable package-level default codec instances.
 - Do not add public runtime setters for client defaults; use `Clone(opts...)` to

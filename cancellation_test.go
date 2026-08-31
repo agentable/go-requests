@@ -109,14 +109,11 @@ func TestCancelDuringResponseBody(t *testing.T) {
 	defer cancel()
 
 	client := newTestClient(t, WithBaseURL(server.URL))
-	resp, err := client.Get("/").MaxResponseBodyBytes(1 << 20).Send(ctx)
+	_, err := client.Get("/").MaxResponseBodyBytes(1 << 20).Send(ctx)
 
 	require.Error(t, err, "Send must surface cancellation while buffering the body")
 	assert.True(t, IsCanceled(err) || errors.Is(err, context.Canceled) || isURLErrorCanceled(err),
 		"expected cancellation, got %v", err)
-	if resp != nil {
-		_ = resp.Close()
-	}
 }
 
 // TestCancelDuringRetryBackoff covers cancellation while the retry loop is
@@ -149,7 +146,7 @@ func TestCancelDuringRetryBackoff(t *testing.T) {
 	}()
 
 	start := time.Now()
-	resp, err := client.Get("/").Send(ctx)
+	_, err := client.Get("/").Send(ctx)
 	elapsed := time.Since(start)
 
 	require.Error(t, err)
@@ -160,9 +157,6 @@ func TestCancelDuringRetryBackoff(t *testing.T) {
 	got := attempts
 	mu.Unlock()
 	assert.LessOrEqual(t, got, int32(2), "no further attempts after cancellation")
-	if resp != nil {
-		_ = resp.Close()
-	}
 }
 
 func TestCancelDuringStream(t *testing.T) {

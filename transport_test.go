@@ -57,7 +57,6 @@ func TestSetHTTPClient(t *testing.T) {
 
 	resp, err := client.Get("/test").Send(context.Background())
 	require.NoError(t, err)
-	defer resp.Close() //nolint:errcheck // test cleanup closes response body
 	assert.Equal(t, http.StatusOK, resp.StatusCode())
 }
 
@@ -157,7 +156,6 @@ func TestHTTP2OptionsNegotiateHTTP2(t *testing.T) {
 
 	resp, err := client.Get(server.URL).Send(context.Background())
 	require.NoError(t, err)
-	defer resp.Close() //nolint:errcheck // test cleanup closes response body
 	assert.Equal(t, "HTTP/2.0", resp.Protocol())
 }
 

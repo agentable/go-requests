@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -28,6 +29,30 @@ func (*testCookieJar) SetCookies(*url.URL, []*http.Cookie) {}
 
 func (*testCookieJar) Cookies(*url.URL) []*http.Cookie { return nil }
 
+type nilEncoder struct{}
+
+func (*nilEncoder) Encode(any) (io.Reader, error) { return nil, nil }
+
+type nilDecoder struct{}
+
+func (*nilDecoder) Decode(io.Reader, any) error { return nil }
+
+type nilLogger struct{}
+
+func (*nilLogger) Debugf(string, ...any) {}
+func (*nilLogger) Infof(string, ...any)  {}
+func (*nilLogger) Warnf(string, ...any)  {}
+func (*nilLogger) Errorf(string, ...any) {}
+
+type nilRoundTripper struct{}
+
+func (*nilRoundTripper) RoundTrip(*http.Request) (*http.Response, error) { return nil, nil }
+
+type nilLocalAddr struct{}
+
+func (*nilLocalAddr) Network() string { return "test" }
+func (*nilLocalAddr) String() string  { return "test" }
+
 func TestNew_NoOptions(t *testing.T) {
 	c := newTestClient(t)
 	require.NotNil(t, c)
@@ -41,6 +66,187 @@ func TestNew_NoOptions(t *testing.T) {
 func TestNew_WithBaseURL(t *testing.T) {
 	c := newTestClient(t, WithBaseURL("https://api.example.com"))
 	assert.Equal(t, "https://api.example.com", c.baseURL)
+}
+
+func TestNew_ValidatesFinalBaseURL(t *testing.T) {
+	valid := []string{
+		"",
+		"http://example.com",
+		"https://example.com/api/v1",
+		"https://user:password@example.com/api",
+		"https://[2001:db8::1]:8443/api",
+	}
+	for _, baseURL := range valid {
+		t.Run("valid "+baseURL, func(t *testing.T) {
+			client, err := New(WithBaseURL(baseURL))
+			require.NoError(t, err)
+			assert.NotNil(t, client)
+		})
+	}
+
+	invalid := []string{
+		"/relative",
+		"//example.com/api",
+		"example.com/api",
+		"https:///api",
+		"custom:service",
+		"https://example.com/api#fragment-marker",
+		"https://example.com:bad/api",
+	}
+	for _, baseURL := range invalid {
+		t.Run("invalid "+baseURL, func(t *testing.T) {
+			client, err := New(WithBaseURL(baseURL))
+			assert.Nil(t, client)
+			assert.ErrorIs(t, err, ErrInvalidConfigValue)
+			if err != nil {
+				assert.NotContains(t, err.Error(), "fragment-marker")
+				assert.NotContains(t, err.Error(), "secret")
+			}
+		})
+	}
+}
+
+func TestNew_PreservesBaseURLQueryWhenResolvingRequests(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/smart", r.URL.Path)
+		assert.Equal(t, "acme", r.URL.Query().Get("tenant"))
+		assert.Equal(t, "hello", r.URL.Query().Get("q"))
+		assert.Equal(t, []string{"base", "request", "builder"}, r.URL.Query()["tag"])
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := New(WithBaseURL(server.URL + "/api?tenant=acme&tag=base"))
+	require.NoError(t, err)
+	response, err := client.Get("/smart?tag=request").
+		Query("tag", "builder").
+		Query("q", "hello").
+		Send(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusNoContent, response.StatusCode())
+}
+
+func TestNew_RejectsMalformedBaseURLQuery(t *testing.T) {
+	client, err := New(WithBaseURL("https://example.com/api?tenant=acme;marker=secret"))
+
+	assert.Nil(t, client)
+	assert.ErrorIs(t, err, ErrInvalidConfigValue)
+	if err != nil {
+		assert.NotContains(t, err.Error(), "secret")
+	}
+}
+
+func TestNew_BaseURLSchemeValidationUsesFinalTransport(t *testing.T) {
+	customTransport := testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Header:     http.Header{},
+			Body:       http.NoBody,
+			Request:    req,
+		}, nil
+	})
+
+	for _, opts := range [][]Option{
+		{WithBaseURL("custom://service/api"), WithTransport(customTransport)},
+		{WithTransport(customTransport), WithBaseURL("custom://service/api")},
+	} {
+		client, err := New(opts...)
+		require.NoError(t, err)
+		resp, err := client.Get("resource").Send(t.Context())
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode())
+	}
+
+	for _, test := range []struct {
+		name string
+		opts []Option
+	}{
+		{name: "default transport", opts: []Option{WithBaseURL("custom://service/api")}},
+		{name: "explicit default transport", opts: []Option{WithBaseURL("custom://service/api"), WithTransport(nil)}},
+		{name: "standard transport", opts: []Option{WithBaseURL("custom://service/api"), WithTransport(&http.Transport{})}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client, err := New(test.opts...)
+			assert.Nil(t, client)
+			assert.ErrorIs(t, err, ErrInvalidConfigValue)
+		})
+	}
+}
+
+func TestClone_ValidatesFinalBaseURLWithoutChangingOriginal(t *testing.T) {
+	base := newTestClient(t, WithBaseURL("https://example.com/api"))
+
+	clone, err := base.Clone(WithBaseURL("/relative"))
+
+	assert.Nil(t, clone)
+	assert.ErrorIs(t, err, ErrInvalidConfigValue)
+	assert.Equal(t, "https://example.com/api", base.GetBaseURL())
+}
+
+func TestConstructionRejectsTypedNilCollaborators(t *testing.T) {
+	tests := []struct {
+		name   string
+		option Option
+	}{
+		{name: "JSON encoder", option: WithJSONEncoder((*nilEncoder)(nil))},
+		{name: "JSON decoder", option: WithJSONDecoder((*nilDecoder)(nil))},
+		{name: "XML encoder", option: WithXMLEncoder((*nilEncoder)(nil))},
+		{name: "XML decoder", option: WithXMLDecoder((*nilDecoder)(nil))},
+		{name: "YAML encoder", option: WithYAMLEncoder((*nilEncoder)(nil))},
+		{name: "YAML decoder", option: WithYAMLDecoder((*nilDecoder)(nil))},
+		{name: "logger", option: WithLogger((*nilLogger)(nil))},
+		{name: "transport", option: WithTransport((*nilRoundTripper)(nil))},
+		{name: "local address", option: WithLocalAddr((*nilLocalAddr)(nil))},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			for _, construct := range []struct {
+				name string
+				call func() (*Client, error)
+			}{
+				{name: "New", call: func() (*Client, error) { return New(test.option) }},
+				{name: "Clone", call: func() (*Client, error) {
+					base := newTestClient(t)
+					return base.Clone(test.option)
+				}},
+			} {
+				t.Run(construct.name, func(t *testing.T) {
+					client, err := construct.call()
+					assert.Nil(t, client)
+					assert.ErrorIs(t, err, ErrInvalidConfigValue)
+				})
+			}
+		})
+	}
+}
+
+func TestConstructionPreservesPlainNilOptionSemantics(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := New(
+		WithBaseURL(server.URL),
+		WithLogger(NewDefaultLogger(io.Discard, LevelDebug)),
+		WithLogger(nil),
+		WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("custom transport should have been cleared")
+		})),
+		WithTransport(nil),
+		WithLocalAddr(&net.TCPAddr{}),
+		WithLocalAddr(nil),
+	)
+	require.NoError(t, err)
+	assert.Nil(t, client.logger)
+	assert.Nil(t, client.localAddr)
+	_, ok := client.UnsafeHTTPClient().Transport.(*http.Transport)
+	assert.True(t, ok)
+
+	resp, err := client.Get("/").Send(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode())
 }
 
 func TestNewWithBaseURLRedactsDiagnostics(t *testing.T) {
