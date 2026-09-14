@@ -14,7 +14,7 @@ import (
 // ErrInvalidConfigValue returned by Send or SendStream before dispatch.
 func (b *RequestBuilder) Timeout(timeout time.Duration) *RequestBuilder {
 	if err := validateDurationOption("Timeout", timeout); err != nil {
-		b.setPreparationError(err)
+		b.setPreparationError(err, preparationErrorClassInvalidConfigValue)
 		return b
 	}
 	b.timeout = timeout
@@ -27,7 +27,7 @@ func (b *RequestBuilder) Timeout(timeout time.Duration) *RequestBuilder {
 // SendStream before body preparation or dispatch.
 func (b *RequestBuilder) MaxResponseBodyBytes(maxBytes int64) *RequestBuilder {
 	if maxBytes < 0 {
-		b.setPreparationError(invalidOptionValue("MaxResponseBodyBytes"))
+		b.setPreparationError(invalidOptionValue("MaxResponseBodyBytes"), preparationErrorClassInvalidConfigValue)
 		return b
 	}
 	b.maxResponseBodyBytes = maxBytes
@@ -38,7 +38,7 @@ func (b *RequestBuilder) MaxResponseBodyBytes(maxBytes int64) *RequestBuilder {
 // A negative Max records an ErrInvalidConfigValue returned before dispatch.
 func (b *RequestBuilder) Retry(policy RetryPolicy) *RequestBuilder {
 	if err := validateIntOption("Retry.Max", policy.Max); err != nil {
-		b.setPreparationError(err)
+		b.setPreparationError(err, preparationErrorClassInvalidConfigValue)
 		return b
 	}
 	b.retryPolicy = policy

@@ -31,6 +31,199 @@ func TestPrepareBodyWithFormFields(t *testing.T) {
 	assert.Equal(t, url.Values{"name": {"Jane Doe"}, "age": {"32"}}.Encode(), string(data))
 }
 
+func TestRequestPreviewBodySelectionMatrix(t *testing.T) {
+	var encoderCalls atomic.Int64
+	client := newTestClient(t, WithJSONEncoder(countingEncoder{calls: &encoderCalls}))
+	tests := []struct {
+		name         string
+		builder      func() *RequestBuilder
+		wantKind     PreviewBodyKind
+		wantMedia    string
+		wantPresence PreviewValueState
+		wantLength   int64
+		wantKnown    bool
+		wantReplay   bool
+		wantReplayOK bool
+	}{
+		{
+			name:         "none",
+			builder:      func() *RequestBuilder { return client.Get("https://example.com") },
+			wantKind:     PreviewBodyNone,
+			wantPresence: PreviewValueUnknown,
+			wantLength:   -1,
+		},
+		{
+			name:         "empty text",
+			builder:      func() *RequestBuilder { return client.Post("https://example.com").Text("") },
+			wantKind:     PreviewBodyText,
+			wantMedia:    "text/plain",
+			wantPresence: PreviewValuePresent,
+			wantLength:   0,
+			wantKnown:    true,
+			wantReplay:   true,
+			wantReplayOK: true,
+		},
+		{
+			name:         "nil bytes",
+			builder:      func() *RequestBuilder { return client.Post("https://example.com").Bytes(nil) },
+			wantKind:     PreviewBodyBytes,
+			wantPresence: PreviewValuePresent,
+			wantLength:   0,
+			wantKnown:    true,
+			wantReplay:   true,
+			wantReplayOK: true,
+		},
+		{
+			name:         "empty form",
+			builder:      func() *RequestBuilder { return client.Post("https://example.com").Form(url.Values{}) },
+			wantKind:     PreviewBodyForm,
+			wantMedia:    "application/x-www-form-urlencoded",
+			wantPresence: PreviewValuePresent,
+			wantLength:   -1,
+			wantReplay:   true,
+			wantReplayOK: true,
+		},
+		{
+			name: "form remains structural",
+			builder: func() *RequestBuilder {
+				return client.Post("https://example.com").Form(url.Values{"secret": {"value"}})
+			},
+			wantKind:     PreviewBodyForm,
+			wantMedia:    "application/x-www-form-urlencoded",
+			wantPresence: PreviewValuePresent,
+			wantLength:   -1,
+			wantReplay:   true,
+			wantReplayOK: true,
+		},
+		{
+			name: "json is structural",
+			builder: func() *RequestBuilder {
+				return client.Post("https://example.com").JSON(map[string]string{"secret": "value"})
+			},
+			wantKind:     PreviewBodyJSON,
+			wantMedia:    "application/json",
+			wantPresence: PreviewValuePresent,
+			wantLength:   -1,
+			wantReplay:   true,
+			wantReplayOK: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			encoderCalls.Store(0)
+			preview, err := test.builder().Preview(t.Context())
+			require.NoError(t, err)
+			body := preview.Body()
+			assert.Equal(t, test.wantKind, body.Kind())
+			assert.Equal(t, test.wantMedia, body.MediaType())
+			assert.Equal(t, test.wantPresence, body.Presence())
+			assert.Equal(t, test.wantLength, body.Length())
+			assert.Equal(t, test.wantKnown, body.LengthKnown())
+			assert.Equal(t, test.wantReplay, body.Replayable())
+			assert.Equal(t, test.wantReplayOK, body.ReplayabilityKnown())
+			if test.wantPresence == PreviewValuePresent && test.wantKind != PreviewBodyNone {
+				assert.Equal(t, PreviewValueOmitted, body.Value().State())
+			}
+		})
+	}
+
+	assert.Zero(t, encoderCalls.Load())
+}
+
+func TestRequestPreviewDoesNotReadOpaqueReader(t *testing.T) {
+	reader := &previewTrackingReader{}
+	preview, err := newTestClient(t).Post("https://example.com").
+		Reader(reader, "application/octet-stream").
+		Preview(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, PreviewBodyReader, preview.Body().Kind())
+	assert.Equal(t, "application/octet-stream", preview.Body().MediaType())
+	assert.Equal(t, PreviewValuePresent, preview.Body().Presence())
+	assert.Equal(t, PreviewValueOmitted, preview.Body().Value().State())
+	assert.False(t, preview.Body().LengthKnown())
+	assert.False(t, preview.Body().ReplayabilityKnown())
+	assert.Zero(t, reader.reads.Load())
+}
+
+func TestRequestPreviewTypedBodiesAreStructuralForAllCodecs(t *testing.T) {
+	tests := []struct {
+		name      string
+		option    func(*atomic.Int64) Option
+		build     func(*Client) *RequestBuilder
+		wantKind  PreviewBodyKind
+		wantMedia string
+	}{
+		{
+			name: "json",
+			option: func(calls *atomic.Int64) Option {
+				return WithJSONEncoder(countingEncoder{calls: calls})
+			},
+			build: func(client *Client) *RequestBuilder {
+				return client.Post("https://example.com").JSON(struct{ Secret string }{Secret: "value"})
+			},
+			wantKind:  PreviewBodyJSON,
+			wantMedia: "application/json",
+		},
+		{
+			name: "xml",
+			option: func(calls *atomic.Int64) Option {
+				return WithXMLEncoder(countingEncoder{calls: calls})
+			},
+			build: func(client *Client) *RequestBuilder {
+				return client.Post("https://example.com").XML(struct{ Secret string }{Secret: "value"})
+			},
+			wantKind:  PreviewBodyXML,
+			wantMedia: "application/xml",
+		},
+		{
+			name: "yaml",
+			option: func(calls *atomic.Int64) Option {
+				return WithYAMLEncoder(countingEncoder{calls: calls})
+			},
+			build: func(client *Client) *RequestBuilder {
+				return client.Post("https://example.com").YAML(struct{ Secret string }{Secret: "value"})
+			},
+			wantKind:  PreviewBodyYAML,
+			wantMedia: "application/yaml",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var encoderCalls atomic.Int64
+			client := newTestClient(t, test.option(&encoderCalls))
+			preview, err := test.build(client).Preview(t.Context())
+
+			require.NoError(t, err)
+			assert.Equal(t, test.wantKind, preview.Body().Kind())
+			assert.Equal(t, test.wantMedia, preview.Body().MediaType())
+			assert.Equal(t, PreviewValueOmitted, preview.Body().Value().State())
+			assert.Zero(t, encoderCalls.Load())
+		})
+	}
+}
+
+func TestRequestPreviewRejectsTypedNilReader(t *testing.T) {
+	var reader *previewTrackingReader
+	preview, err := newTestClient(t).Post("https://example.com").
+		Reader(reader, "application/octet-stream").
+		Preview(t.Context())
+
+	assert.Nil(t, preview)
+	assert.ErrorIs(t, err, ErrInvalidConfigValue)
+}
+
+type previewTrackingReader struct {
+	reads atomic.Int64
+}
+
+func (r *previewTrackingReader) Read([]byte) (int, error) {
+	r.reads.Add(1)
+	return 0, io.EOF
+}
+
 func TestFormClonesCallerValues(t *testing.T) {
 	tests := []struct {
 		name  string

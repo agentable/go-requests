@@ -11,6 +11,7 @@ A fluent HTTP client library for Go with middleware, retries, proxy and redirect
 - **Retry-aware delivery**: Combine retry counts, backoff strategies, and `Retry-After` handling without wrapping `net/http` yourself.
 - **Transport controls**: Configure TLS, mTLS, HTTP/2, redirect policies, proxies, bypass rules, resolver/dialer hooks, and connection pooling.
 - **Ordered headers**: Express header order as request intent with `orderedobject`, while preserving `net/http` header semantics.
+- **Safe request preview**: Inspect method, target structure, metadata shape, and body facts before delivery without sending or consuming caller-owned values.
 - **Optional extensions**: Apply browser-like headers and TLS ClientHello fingerprints as profiles, or install an explicit caller-owned HTTP/3 transport.
 - **`net/http` handoff**: Pass a caller-owned snapshot of standard client configuration to other SDKs.
 - **Response helpers**: Bound buffered responses, decode JSON/XML/YAML, inspect diagnostics, iterate lines, or save to disk without accepting truncated data.
@@ -199,6 +200,33 @@ keeps the no-timeout, no-retry, and unlimited-buffer meanings.
 The resolved URL, method, and context are validated by `net/http` before a
 streaming body is opened. Invalid request shape returns
 `ErrRequestCreationFailed` without reading or closing the caller's body source.
+
+### Preview a request before sending
+
+Use `Preview` when a CLI or SDK needs to inspect request structure before it
+decides to send. It performs no network or delivery work and keeps ordinary
+query, header, cookie, and body values omitted by policy; the final semantic
+`Content-Type` remains available as structural metadata.
+
+```go
+preview, err := client.Post("/articles").
+	JSON(map[string]string{"title": "hello"}).
+	Query("include", "comments").
+	Preview(context.Background())
+if err != nil {
+	log.Fatal(err)
+}
+
+fmt.Println(preview.Method())                  // POST
+fmt.Println(preview.Body().Kind())             // json
+fmt.Println(preview.ContentType())             // application/json
+fmt.Println(len(preview.Query()[0].Values()))  // 1
+```
+
+`RequestPreview` is a detached structural projection, not an exact wire dump,
+post-middleware request, or sendable prepared request. `Preview` does not
+consume readers or multipart parts, invoke encoders or auth methods, or change
+the builder; call `Send` or `SendStream` separately when delivery is wanted.
 
 ### Ordered headers
 
@@ -587,8 +615,12 @@ response-header timeouts match `IsTimeout`. Joined retry errors preserve these
 decoding, config).
 
 URL-bearing construction, preflight, and transport errors omit URL userinfo,
-query values, and fragments from returned and logged diagnostics. Wrapped
-causes and the classifications above remain available through the error chain.
+query values, and fragments from returned and logged diagnostics. `Preview`
+returns a fixed `ErrRequestCreationFailed` for invalid method or URL preflight
+and does not expose the underlying cause. `Send` and `SendStream` retain or
+wrap their existing request-creation causes, while terminal transport causes
+and the classifications above remain available through the standard error
+chain.
 
 ### Inspect diagnostics
 

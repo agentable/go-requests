@@ -45,7 +45,7 @@ func (b *RequestBuilder) Form(v any) *RequestBuilder {
 	formFields, err := parseFormFields(v)
 
 	if err != nil {
-		b.setPreparationError(err)
+		b.setPreparationError(err, preparationErrorClassUnsupportedFormFieldsType)
 		if b.client.logger != nil {
 			b.client.logger.Errorf("Error parsing form: %v", err)
 		}
@@ -71,7 +71,7 @@ func (b *RequestBuilder) Form(v any) *RequestBuilder {
 func (b *RequestBuilder) FormFields(fields any) *RequestBuilder {
 	values, err := parseFormFields(fields)
 	if err != nil {
-		b.setPreparationError(err)
+		b.setPreparationError(err, preparationErrorClassUnsupportedFormFieldsType)
 		if b.client.logger != nil {
 			b.client.logger.Errorf("Error parsing form fields: %v", err)
 		}
@@ -124,7 +124,7 @@ func (b *RequestBuilder) DelFormField(key ...string) *RequestBuilder {
 // or 307/308 redirects may resend the body.
 func (b *RequestBuilder) Multipart(m *Multipart) *RequestBuilder {
 	if m == nil {
-		b.setPreparationError(fmt.Errorf("%w: multipart body", ErrInvalidConfigValue))
+		b.setPreparationError(fmt.Errorf("%w: multipart body", ErrInvalidConfigValue), preparationErrorClassInvalidConfigValue)
 		return b
 	}
 	b.selectBody(requestBodySelection{

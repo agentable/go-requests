@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -47,6 +48,103 @@ func TestMultipartBuilder(t *testing.T) {
 	resp, err := client.Post("/").Multipart(body).Send(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode())
+}
+
+func TestRequestPreviewMultipartManifestIsDetachedAndNonConsuming(t *testing.T) {
+	source := &previewMultipartReader{}
+	body := NewMultipart().
+		Field("z", "last").
+		Field("a", "first").
+		Field("a", "second").
+		Boundary("requests-boundary").
+		Part(FilePart{
+			Field:       "upload",
+			Filename:    "payload.txt",
+			ContentType: "text/plain",
+			Body:        source,
+		}).
+		Replayable(1024)
+
+	preview, err := newTestClient(t).Post("https://example.com").Multipart(body).Preview(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, PreviewBodyMultipart, preview.Body().Kind())
+	assert.Equal(t, "multipart/form-data", preview.Body().MediaType())
+	assert.Equal(t, PreviewValuePresent, preview.Body().Presence())
+	assert.True(t, preview.Body().Replayable())
+	assert.True(t, preview.Body().ReplayabilityKnown())
+	manifest := preview.Body().Multipart()
+	require.NotNil(t, manifest)
+	assert.Equal(t, PreviewValuePresent, manifest.Boundary().State())
+	assert.Equal(t, "requests-boundary", manifest.Boundary().Value())
+
+	fields := manifest.Fields()
+	require.Len(t, fields, 2)
+	assert.Equal(t, "a", fields[0].Name())
+	assert.Len(t, fields[0].Values(), 2)
+	assert.Equal(t, "z", fields[1].Name())
+	assert.Equal(t, PreviewValueOmitted, fields[0].Values()[0].State())
+
+	files := manifest.Files()
+	require.Len(t, files, 1)
+	assert.Equal(t, "upload", files[0].Field())
+	assert.Equal(t, "payload.txt", files[0].Filename())
+	assert.Equal(t, "text/plain", files[0].ContentType())
+	assert.Zero(t, source.reads.Load())
+
+	fields[0].values[0] = PreviewValue{state: PreviewValuePresent, value: "leak"}
+	files[0].field = "mutated"
+	second := preview.Body().Multipart()
+	assert.Equal(t, PreviewValueOmitted, second.Fields()[0].Values()[0].State())
+	assert.Equal(t, "upload", second.Files()[0].Field())
+}
+
+func TestRequestPreviewMultipartRejectsStaticInvalidityWithoutReadingParts(t *testing.T) {
+	tests := []struct {
+		name string
+		body *Multipart
+	}{
+		{
+			name: "negative replay limit",
+			body: NewMultipart().Replayable(-1),
+		},
+		{
+			name: "invalid boundary",
+			body: NewMultipart().Boundary(strings.Repeat("x", 71)),
+		},
+		{
+			name: "empty file field",
+			body: NewMultipart().Part(FilePart{Filename: "payload.txt", Body: &previewMultipartReader{}}),
+		},
+		{
+			name: "nil file body",
+			body: NewMultipart().Part(FilePart{Field: "upload", Filename: "payload.txt"}),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			preview, err := newTestClient(t).Post("https://example.com").Multipart(test.body).Preview(t.Context())
+			assert.Nil(t, preview)
+			assert.ErrorIs(t, err, ErrInvalidConfigValue)
+		})
+	}
+
+	var typedNil *previewMultipartReader
+	preview, err := newTestClient(t).Post("https://example.com").
+		Multipart(NewMultipart().Part(FilePart{Field: "upload", Body: typedNil})).
+		Preview(t.Context())
+	assert.Nil(t, preview)
+	assert.ErrorIs(t, err, ErrInvalidConfigValue)
+}
+
+type previewMultipartReader struct {
+	reads atomic.Int64
+}
+
+func (r *previewMultipartReader) Read([]byte) (int, error) {
+	r.reads.Add(1)
+	return 0, io.EOF
 }
 
 func TestMultipartDoesNotCloseBorrowedFilePartBody(t *testing.T) {

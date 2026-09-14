@@ -45,6 +45,12 @@ implementations only provide the four emission methods.
 - Logging is opt-in. If no logger is configured, the package performs no logging.
 - Log messages are operational diagnostics, not a stable parsing interface.
 - File-loading helpers and retry paths may log failures or retry events when a logger is configured.
+- `RequestBuilder.Preview` is silent even when a logger is configured. It does
+  not enter delivery or emit a dry-run log event.
+- Preview validates method and resolved URL shape without calling
+  `Request.Write`, `Request.WriteProxy`, `Request.AddCookie`, or another
+  standard-library request serialization path. It returns a detached,
+  policy-filtered result; it is not a wire dump.
 - URL-bearing construction, preflight, and transport diagnostics omit URL
   userinfo, query values, and fragments.
 
@@ -53,6 +59,9 @@ implementations only provide the four emission methods.
 - Do not pass `slog.Level*` values to `NewDefaultLogger`; use `requests.Level*`.
 - Do not require custom loggers to expose level configuration.
 - Do not parse package log messages as a stable machine-readable API.
+- Do not treat Preview output or Preview silence as a replacement for delivery
+  diagnostics; Preview intentionally does not observe middleware or transport
+  behavior.
 
 ## Contract Invariants
 

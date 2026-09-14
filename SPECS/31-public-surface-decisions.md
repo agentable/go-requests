@@ -118,6 +118,36 @@ The arbitrary-method entry point is `Client.Request(method, path)`.
 - **Contract Impact**: Public request syntax is either a verb helper such as
   `Get(path)` or `Request(method, path)`.
 
+### Structural Request Preview
+
+`RequestBuilder.Preview(ctx)` returns a detached `RequestPreview` projection
+for callers that need to inspect request structure before deciding to send it.
+The result exposes only policy-filtered method, safe target structure, query
+keys, metadata shape, cookie names, selected body facts, and the semantic
+`Content-Type`. It does not expose caller values, a live `*http.Request`, a
+prepared or replayable body, middleware output, or delivery status.
+
+- **Why**: SDK and CLI callers need a no-send inspection step, while ordinary
+  request values and credentials must remain opaque and caller-owned streams
+  must not be consumed. Keeping the result detached preserves the existing
+  builder ownership model and gives Preview no second send lifecycle.
+- **Rejected**: A raw or prepared `*http.Request` loses the privacy boundary
+  and invites accidental dispatch; a middleware or transport interception path
+  reports post-delivery behavior and can consume resources; a caller-controlled
+  disclosure switch makes safety depend on the caller rather than an owning
+  policy.
+- **Basis**: The current `RequestPreview` implementation in
+  `request_preview.go`, its focused behavior tests in `request_test.go`,
+  `body_test.go`, and `form_test.go`, the existing `RequestBuilder`/delivery
+  ownership split in `SPECS/00-overview.md` and
+  `SPECS/21-request-builder-api-specs.md`, and the standard-library distinction
+  between request construction and body/transport serialization.
+- **Contract Impact**: `Preview` is structural-only. It never invokes
+  middleware, cookie jars, authentication methods, encoders, readers,
+  multipart producers, retry/backoff, redirect, proxy, transport, logging, or
+  request serialization. Downstream full dry-run assembly remains outside this
+  root package's contract.
+
 ### Retry Policy As One Value
 
 Retry behavior is configured through `RetryPolicy` at the client layer with
@@ -174,6 +204,8 @@ These symbols remain public because they name real integration points:
 - Do not expose mutable response internals as fields.
 - Do not add a transport adapter that reapplies requests defaults outside
   `RequestBuilder` dispatch.
+- Do not add a raw/prepared/sendable request result, body rewind handle, or
+  caller-controlled disclosure flag to implement Preview.
 - Do not add a public symbol unless it names a durable concept that belongs in
   the request language.
 - Do not publish extension modules whose root requirement differs from their
@@ -184,6 +216,8 @@ These symbols remain public because they name real integration points:
 - Public construction is limited to `New`, `Client.Clone`, builder creation, and verb
   helpers.
 - Request body APIs are explicit about encoding and ownership.
+- Request preview is a structural, detached view rather than another delivery
+  path.
 - Buffered and streaming response ownership remain separate.
 - Public escape hatches are deliberate and named here.
 - Extension module release verification is explicit.

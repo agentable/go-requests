@@ -32,7 +32,16 @@ type RequestBuilder struct {
 	hasRetryPolicy       bool
 	auth                 AuthMethod
 	preparationErr       error
+	preparationErrClass  preparationErrorClass
 }
+
+type preparationErrorClass uint8
+
+const (
+	preparationErrorClassUnknown preparationErrorClass = iota
+	preparationErrorClassInvalidConfigValue
+	preparationErrorClassUnsupportedFormFieldsType
+)
 
 func sanitizeURLDiagnosticError(err error) error {
 	_, sanitized := sanitizeURLDiagnosticErrorTree(err)
@@ -157,15 +166,16 @@ func (c *Client) NewRequestBuilder(method, path string) *RequestBuilder {
 // AddMiddleware adds a middleware to the request.
 func (b *RequestBuilder) AddMiddleware(middlewares ...Middleware) {
 	if err := validateMiddlewares(middlewares); err != nil {
-		b.setPreparationError(err)
+		b.setPreparationError(err, preparationErrorClassInvalidConfigValue)
 		return
 	}
 	b.middlewares = append(b.middlewares, middlewares...)
 }
 
-func (b *RequestBuilder) setPreparationError(err error) {
+func (b *RequestBuilder) setPreparationError(err error, class preparationErrorClass) {
 	if err != nil && b.preparationErr == nil {
 		b.preparationErr = err
+		b.preparationErrClass = class
 	}
 }
 
@@ -318,7 +328,7 @@ func (b *RequestBuilder) DelQuery(key ...string) *RequestBuilder {
 func (b *RequestBuilder) QueriesStruct(queryStruct any) *RequestBuilder {
 	values, err := query.Values(queryStruct)
 	if err != nil {
-		b.setPreparationError(err)
+		b.setPreparationError(err, preparationErrorClassUnknown)
 		if b.client.logger != nil {
 			b.client.logger.Errorf("Error encoding query struct: %v", err)
 		}
@@ -464,7 +474,7 @@ func (b *RequestBuilder) Referer(referer string) *RequestBuilder {
 // Auth applies an authentication method to the request.
 func (b *RequestBuilder) Auth(auth AuthMethod) *RequestBuilder {
 	if err := validateAuthOption(auth); err != nil {
-		b.setPreparationError(err)
+		b.setPreparationError(err, preparationErrorClassInvalidConfigValue)
 		return b
 	}
 	b.auth = auth

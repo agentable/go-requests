@@ -1,18 +1,23 @@
 // Package requests provides a fluent HTTP client library for Go.
 //
-// # Four-object model
+// # Core delivery model
 //
-// The package is built around four public objects:
+// The package is built around four delivery objects and one detached value
+// projection:
 //
 //   - Client owns reusable configuration: base URL, default headers and cookies,
 //     auth, retry policy, codecs, logger, and transport settings.
 //   - RequestBuilder owns one outbound request: method, path, request-local
 //     metadata, body, timeout, retries, buffered response limit, and middleware.
+//   - RequestPreview is a detached, policy-filtered projection returned before
+//     delivery; it is not a prepared or sendable request.
 //   - Response exposes the buffered result of one Send call.
 //   - StreamResponse exposes the unbuffered result of one SendStream call.
 //
 // Client defaults are formed during New or Clone. State that is reused across
 // requests belongs on Client; state for one request belongs on RequestBuilder.
+// Preview does not consume request inputs, invoke delivery collaborators, or
+// freeze the builder; callers can still send the builder independently.
 //
 // # Quick start
 //

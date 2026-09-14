@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -858,6 +859,707 @@ func TestSendPreservesRepeatedQueryValues(t *testing.T) {
 	got, err := url.ParseQuery(strings.TrimSpace(string(body)))
 	require.NoError(t, err)
 	assert.Equal(t, []string{"existing", "builder", "queries"}, got["tag"])
+}
+
+func TestRequestPreviewResolvesMethodAndOmitsUnsafeTargetParts(t *testing.T) {
+	client := newTestClient(t, WithBaseURL("https://user:password@example.com/api?base=one"))
+
+	preview, err := client.Request("", "/items/{id}?tag=path#fragment").
+		PathParam("id", "a/b").
+		Query("tag", "builder").
+		Preview(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, http.MethodGet, preview.Method())
+	assert.Equal(t, "https", preview.Target().Scheme())
+	assert.Equal(t, "example.com", preview.Target().Host())
+	assert.Equal(t, PreviewValueOmitted, preview.Target().Path().State())
+
+	safeURL := preview.URL()
+	require.NotNil(t, safeURL)
+	assert.Equal(t, "https", safeURL.Scheme)
+	assert.Equal(t, "example.com", safeURL.Host)
+	assert.Empty(t, safeURL.User)
+	assert.Empty(t, safeURL.Path)
+	assert.Empty(t, safeURL.RawQuery)
+	assert.Empty(t, safeURL.Fragment)
+	assert.Empty(t, safeURL.RawFragment)
+
+	queries := preview.Query()
+	require.Len(t, queries, 2)
+	assert.Equal(t, "base", queries[0].Key())
+	assert.Equal(t, "tag", queries[1].Key())
+	assert.Len(t, queries[0].Values(), 1)
+	assert.Len(t, queries[1].Values(), 2)
+	for _, value := range queries[1].Values() {
+		assert.Equal(t, PreviewValueOmitted, value.State())
+	}
+}
+
+func TestRequestPreviewProjectsMetadataWithoutValues(t *testing.T) {
+	ordered := orderedobject.New[[]string]().
+		Set("X-Ordered", []string{"ordered"}).
+		Set(":authority", []string{"example.com"})
+	client := newTestClient(t,
+		WithHeaders(http.Header{
+			"X-Client":     {"client"},
+			"Content-Type": {"application/json"},
+			"Cookie":       {"session=client; shared=client"},
+		}),
+		WithCookies(map[string]string{"default": "cookie", "shared": "default"}),
+		WithBasicAuth("user", "password"),
+	)
+
+	preview, err := client.Post("https://example.com/items").
+		OrderedHeaders(ordered).
+		Header("X-Client", "request").
+		Header("Content-Type", "text/plain").
+		Header("Cookie", "shared=request; request=header").
+		Cookie("request", "cookie").
+		Auth(BearerAuth{Token: "token"}).
+		Preview(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, "text/plain", preview.ContentType())
+	headerValues := func(name string) []PreviewValue {
+		for _, header := range preview.Headers() {
+			if header.Key() == name {
+				return header.Values()
+			}
+		}
+		return nil
+	}
+	assert.Equal(t, []PreviewValue{{state: PreviewValueOmitted}}, headerValues("X-Client"))
+	assert.Equal(t, []PreviewValue{{state: PreviewValuePresent, value: "text/plain"}}, headerValues("Content-Type"))
+	assert.Equal(t, []PreviewValue{{state: PreviewValueOmitted}}, headerValues("Authorization"))
+
+	orderedHeaders := preview.OrderedHeaders()
+	require.Len(t, orderedHeaders, 5)
+	assert.Equal(t, "X-Ordered", orderedHeaders[0].Key())
+	assert.Equal(t, ":authority", orderedHeaders[1].Key())
+	assert.Equal(t, PreviewValueOmitted, orderedHeaders[1].Values()[0].State())
+
+	cookies := preview.Cookies()
+	assert.Equal(t, []string{"session", "shared", "default", "request"}, []string{cookies[0].Name(), cookies[1].Name(), cookies[2].Name(), cookies[3].Name()})
+	for _, cookie := range cookies {
+		assert.Equal(t, PreviewValueOmitted, cookie.Value().State())
+	}
+}
+
+func TestRequestPreviewCookieHeadersFollowDeliveryParser(t *testing.T) {
+	invalidName := "bad\x00"
+	nonASCIIName := string([]byte{0xc3, 0xa9})
+	client := newTestClient(t,
+		WithHeaders(http.Header{
+			"Cookie": {"missing-equals; broken=\"unterminated; " + invalidName + "=value; " + nonASCIIName + "=value; client=one; shared=client; shared=client-last"},
+		}),
+	)
+
+	preview, err := client.Get("https://example.com").Preview(t.Context())
+
+	require.NoError(t, err)
+	cookies := preview.Cookies()
+	require.Len(t, cookies, 3)
+	assert.Equal(t, []string{"missing-equals", "client", "shared"}, []string{
+		cookies[0].Name(),
+		cookies[1].Name(),
+		cookies[2].Name(),
+	})
+	for _, cookie := range cookies {
+		assert.Equal(t, PreviewValueOmitted, cookie.Value().State())
+	}
+}
+
+func TestRequestPreviewCookiePrecedenceFiltersInvalidNames(t *testing.T) {
+	nonASCIIName := string([]byte{0xc3, 0xa9})
+	client := newTestClient(t,
+		WithHeaders(http.Header{
+			"Cookie": {"client=one; shared=client; shared=client-last"},
+		}),
+	)
+	client.setDefaultCookie("default", "value")
+	client.setDefaultCookie("bad\x00", "value")
+
+	preview, err := client.Get("https://example.com").
+		Header("Cookie", "shared=request; request=header; shared=request-last; malformed=\"unterminated").
+		Cookie("typed", "value").
+		Cookie(nonASCIIName, "value").
+		Preview(t.Context())
+
+	require.NoError(t, err)
+	cookies := preview.Cookies()
+	require.Len(t, cookies, 5)
+	assert.Equal(t, []string{"client", "shared", "default", "request", "typed"}, []string{
+		cookies[0].Name(),
+		cookies[1].Name(),
+		cookies[2].Name(),
+		cookies[3].Name(),
+		cookies[4].Name(),
+	})
+}
+
+func TestRequestPreviewMultipartContentTypePrecedence(t *testing.T) {
+	findHeader := func(headers PreviewHeaders, name string) (PreviewHeader, bool) {
+		for _, header := range headers {
+			if strings.EqualFold(header.Key(), name) {
+				return header, true
+			}
+		}
+		return PreviewHeader{}, false
+	}
+
+	t.Run("client default is not stale semantic content type", func(t *testing.T) {
+		preview, err := newTestClient(t, WithContentType("application/json")).Post("https://example.com").
+			Multipart(NewMultipart().Field("name", "value")).
+			Preview(t.Context())
+
+		require.NoError(t, err)
+		assert.Equal(t, "multipart/form-data", preview.Body().MediaType())
+		assert.Empty(t, preview.ContentType())
+		_, ok := findHeader(preview.Headers(), "Content-Type")
+		assert.False(t, ok)
+	})
+
+	t.Run("ordered client default is not stale intent", func(t *testing.T) {
+		ordered := orderedobject.New[[]string]().Set("Content-Type", []string{"application/json"})
+		preview, err := newTestClient(t, WithOrderedHeaders(ordered)).Post("https://example.com").
+			Multipart(NewMultipart().Field("name", "value")).
+			Preview(t.Context())
+
+		require.NoError(t, err)
+		assert.Empty(t, preview.ContentType())
+		_, ok := findHeader(preview.Headers(), "Content-Type")
+		assert.False(t, ok)
+		_, ok = findHeader(preview.OrderedHeaders(), "Content-Type")
+		assert.False(t, ok)
+	})
+
+	t.Run("explicit header after multipart wins", func(t *testing.T) {
+		preview, err := newTestClient(t, WithContentType("application/json")).Post("https://example.com").
+			Multipart(NewMultipart().Field("name", "value")).
+			ContentType("application/custom").
+			Preview(t.Context())
+
+		require.NoError(t, err)
+		assert.Equal(t, "application/custom", preview.ContentType())
+		header, ok := findHeader(preview.Headers(), "Content-Type")
+		require.True(t, ok)
+		assert.Equal(t, []PreviewValue{{state: PreviewValuePresent, value: "application/custom"}}, header.Values())
+	})
+
+	t.Run("explicit header before multipart is replaced by generated type", func(t *testing.T) {
+		preview, err := newTestClient(t).Post("https://example.com").
+			ContentType("application/custom").
+			Multipart(NewMultipart().Field("name", "value")).
+			Preview(t.Context())
+
+		require.NoError(t, err)
+		assert.Empty(t, preview.ContentType())
+		_, ok := findHeader(preview.Headers(), "Content-Type")
+		assert.False(t, ok)
+	})
+}
+
+func TestRequestPreviewAccessorsReturnDetachedValues(t *testing.T) {
+	preview, err := newTestClient(t).Post("https://example.com/items?tag=one").
+		Query("tag", "two").
+		Header("X-Request", "value").
+		Preview(t.Context())
+	require.NoError(t, err)
+
+	queries := preview.Query()
+	queries[0].values[0] = PreviewValue{state: PreviewValuePresent, value: "query-leak"}
+	queriesAgain := preview.Query()
+	assert.Equal(t, PreviewValueOmitted, queriesAgain[0].Values()[0].State())
+
+	headers := preview.Headers()
+	headers[0].values[0] = PreviewValue{state: PreviewValuePresent, value: "header-leak"}
+	headersAgain := preview.Headers()
+	assert.Equal(t, PreviewValueOmitted, headersAgain[0].Values()[0].State())
+
+	safeURL := preview.URL()
+	safeURL.Host = "mutated.example"
+	assert.Equal(t, "example.com", preview.URL().Host)
+}
+
+func TestRequestPreviewRejectsUnqualifiedAuthWithoutCallingIt(t *testing.T) {
+	var validCalls atomic.Int64
+	var applyCalls atomic.Int64
+	auth := previewCountingAuth{validCalls: &validCalls, applyCalls: &applyCalls}
+	client := newTestClient(t)
+
+	builder := client.Get("https://example.com").Auth(auth)
+	validCalls.Store(0)
+	preview, err := builder.Preview(t.Context())
+
+	assert.Nil(t, preview)
+	assert.ErrorIs(t, err, ErrInvalidConfigValue)
+	assert.Zero(t, validCalls.Load())
+	assert.Zero(t, applyCalls.Load())
+}
+
+func TestRequestPreviewAcceptsBuiltInAuthValuesAndPointers(t *testing.T) {
+	tests := []struct {
+		name string
+		auth AuthMethod
+	}{
+		{name: "basic value", auth: BasicAuth{Username: "user", Password: "password"}},
+		{name: "basic pointer", auth: &BasicAuth{Username: "user", Password: "password"}},
+		{name: "bearer value", auth: BearerAuth{Token: "token"}},
+		{name: "bearer pointer", auth: &BearerAuth{Token: "token"}},
+		{name: "custom value", auth: CustomAuth{Header: "Custom value"}},
+		{name: "custom pointer", auth: &CustomAuth{Header: "Custom value"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			preview, err := newTestClient(t).Get("https://example.com").Auth(test.auth).Preview(t.Context())
+			require.NoError(t, err)
+			assert.NotNil(t, preview)
+		})
+	}
+}
+
+func TestRequestPreviewRejectsTypedNilBuiltInAuth(t *testing.T) {
+	var auth *BasicAuth
+	preview, err := newTestClient(t).Get("https://example.com").Auth(auth).Preview(t.Context())
+
+	assert.Nil(t, preview)
+	assert.ErrorIs(t, err, ErrInvalidConfigValue)
+}
+
+func TestRequestPreviewPreflightErrorsAreSafeAndClassified(t *testing.T) {
+	tests := []struct {
+		name    string
+		builder *RequestBuilder
+	}{
+		{
+			name:    "invalid method",
+			builder: newTestClient(t).Request("bad method", "https://user:password@example.com/items?secret=value#fragment"),
+		},
+		{
+			name:    "invalid query escape",
+			builder: newTestClient(t).Get("https://user:password@example.com/items?secret=%zz#fragment"),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			preview, err := test.builder.Preview(t.Context())
+			assert.Nil(t, preview)
+			assert.ErrorIs(t, err, ErrRequestCreationFailed)
+			assert.NotContains(t, err.Error(), "user")
+			assert.NotContains(t, err.Error(), "password")
+			assert.NotContains(t, err.Error(), "secret")
+			assert.NotContains(t, err.Error(), "fragment")
+		})
+	}
+}
+
+func TestRequestPreviewCancellationAndNilContext(t *testing.T) {
+	client := newTestClient(t)
+
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	preview, err := client.Get("https://example.com").Preview(canceled)
+	assert.Nil(t, preview)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.True(t, IsCanceled(err))
+	assert.False(t, IsTimeout(err))
+
+	deadline, deadlineCancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer deadlineCancel()
+	preview, err = client.Get("https://example.com").Preview(deadline)
+	assert.Nil(t, preview)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.True(t, IsTimeout(err))
+	assert.False(t, IsCanceled(err))
+
+	preview, err = client.Get("https://example.com").Preview(nil) //nolint:staticcheck // verifies nil context handling
+	assert.Nil(t, preview)
+	assert.ErrorIs(t, err, ErrRequestCreationFailed)
+}
+
+func TestRequestPreviewRetainsFluentErrorBeforeProjection(t *testing.T) {
+	input := struct {
+		Value failingQueryValue `url:"value"`
+	}{}
+	builder := newTestClient(t).Get("https://example.com").
+		QueriesStruct(input).
+		Auth(nil)
+
+	preview, err := builder.Preview(t.Context())
+
+	assert.Nil(t, preview)
+	assert.Equal(t, "request preview preparation failed", err.Error())
+	assert.Nil(t, errors.Unwrap(err))
+	assert.NotErrorIs(t, err, assert.AnError)
+	assert.NotErrorIs(t, err, ErrInvalidConfigValue)
+}
+
+func TestRequestPreviewSanitizesRetainedPreparationErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		secret string
+		cause  *previewPreparationCause
+		build  func(*Client, error) *RequestBuilder
+		wantIs error
+	}{
+		{
+			name:   "query struct",
+			secret: "query-secret",
+			cause:  &previewPreparationCause{secret: "query-secret"},
+			build: func(client *Client, cause error) *RequestBuilder {
+				input := struct {
+					Value previewPreparationValue `url:"value"`
+				}{Value: previewPreparationValue{cause: cause}}
+				return client.Get("https://example.com").QueriesStruct(input)
+			},
+		},
+		{
+			name:   "form",
+			secret: "form-secret",
+			cause:  &previewPreparationCause{secret: "form-secret"},
+			build: func(client *Client, cause error) *RequestBuilder {
+				input := struct {
+					Value previewPreparationValue `url:"value"`
+				}{Value: previewPreparationValue{cause: cause}}
+				return client.Post("https://example.com").Form(input)
+			},
+			wantIs: ErrUnsupportedFormFieldsType,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			preview, err := test.build(newTestClient(t), test.cause).Preview(t.Context())
+
+			assert.Nil(t, preview)
+			require.Error(t, err)
+			assert.Equal(t, "request preview preparation failed", err.Error())
+			assert.NotContains(t, err.Error(), test.secret)
+			assert.NotErrorIs(t, err, test.cause)
+			assert.Nil(t, errors.Unwrap(err))
+			if test.wantIs != nil {
+				assert.ErrorIs(t, err, test.wantIs)
+			}
+			var got *previewPreparationCause
+			assert.NotErrorAs(t, err, &got)
+		})
+	}
+}
+
+func TestRequestPreviewDoesNotInspectRetainedPreparationError(t *testing.T) {
+	var isCalls atomic.Int64
+	var unwrapCalls atomic.Int64
+	cause := &previewPreparationAdversarialError{
+		isCalls:     &isCalls,
+		unwrapCalls: &unwrapCalls,
+	}
+	input := struct {
+		Value previewPreparationValue `url:"value"`
+	}{Value: previewPreparationValue{cause: cause}}
+
+	preview, err := newTestClient(t).Get("https://example.com").
+		QueriesStruct(input).
+		Preview(t.Context())
+
+	assert.Nil(t, preview)
+	require.Error(t, err)
+	assert.Equal(t, "request preview preparation failed", err.Error())
+	assert.Zero(t, isCalls.Load())
+	assert.Zero(t, unwrapCalls.Load())
+}
+
+func TestRequestPreviewDoesNotInvokeAdversarialRetainedErrorMethods(t *testing.T) {
+	inputFor := func(cause error) struct {
+		Value previewPreparationValue `url:"value"`
+	} {
+		return struct {
+			Value previewPreparationValue `url:"value"`
+		}{Value: previewPreparationValue{cause: cause}}
+	}
+
+	t.Run("panic", func(t *testing.T) {
+		cause := &previewPreparationAdversarialError{panicOnIs: true, panicOnUnwrap: true}
+		builder := newTestClient(t).Get("https://example.com").QueriesStruct(inputFor(cause))
+
+		var preview *RequestPreview
+		var err error
+		assert.NotPanics(t, func() {
+			preview, err = builder.Preview(t.Context())
+		})
+		assert.Nil(t, preview)
+		assert.EqualError(t, err, "request preview preparation failed")
+	})
+
+	t.Run("block", func(t *testing.T) {
+		release := make(chan struct{})
+		var isCalls atomic.Int64
+		var unwrapCalls atomic.Int64
+		cause := &previewPreparationAdversarialError{
+			isCalls:       &isCalls,
+			unwrapCalls:   &unwrapCalls,
+			blockOnIs:     release,
+			blockOnUnwrap: release,
+		}
+		builder := newTestClient(t).Get("https://example.com").QueriesStruct(inputFor(cause))
+
+		type previewResult struct {
+			preview *RequestPreview
+			err     error
+		}
+		result := make(chan previewResult, 1)
+		go func() {
+			preview, err := builder.Preview(t.Context())
+			result <- previewResult{preview: preview, err: err}
+		}()
+
+		select {
+		case got := <-result:
+			assert.Nil(t, got.preview)
+			assert.EqualError(t, got.err, "request preview preparation failed")
+		case <-time.After(time.Second):
+			close(release)
+			<-result
+			t.Fatal("Preview invoked a blocking retained error method")
+		}
+		assert.Zero(t, isCalls.Load())
+		assert.Zero(t, unwrapCalls.Load())
+	})
+}
+
+func TestRequestPreviewRedactsRepeatedContentTypeValues(t *testing.T) {
+	findHeader := func(headers PreviewHeaders, name string) (PreviewHeader, bool) {
+		for _, header := range headers {
+			if strings.EqualFold(header.Key(), name) {
+				return header, true
+			}
+		}
+		return PreviewHeader{}, false
+	}
+
+	t.Run("semantic AddHeader", func(t *testing.T) {
+		preview, err := newTestClient(t).Post("https://example.com").
+			AddHeader("Content-Type", "application/first").
+			AddHeader("Content-Type", "application/second").
+			Preview(t.Context())
+
+		require.NoError(t, err)
+		assert.Equal(t, "application/first", preview.ContentType())
+		header, ok := findHeader(preview.Headers(), "Content-Type")
+		require.True(t, ok)
+		assert.Equal(t, []PreviewValue{
+			{state: PreviewValuePresent, value: "application/first"},
+			{state: PreviewValueOmitted},
+		}, header.Values())
+	})
+
+	t.Run("ordered intent", func(t *testing.T) {
+		ordered := orderedobject.New[[]string]().Set("Content-Type", []string{"application/first", "application/second"})
+		preview, err := newTestClient(t).Post("https://example.com").
+			OrderedHeaders(ordered).
+			Preview(t.Context())
+
+		require.NoError(t, err)
+		assert.Equal(t, "application/first", preview.ContentType())
+		header, ok := findHeader(preview.Headers(), "Content-Type")
+		require.True(t, ok)
+		assert.Equal(t, []PreviewValue{
+			{state: PreviewValuePresent, value: "application/first"},
+			{state: PreviewValueOmitted},
+		}, header.Values())
+		orderedHeader, ok := findHeader(preview.OrderedHeaders(), "Content-Type")
+		require.True(t, ok)
+		assert.Equal(t, []PreviewValue{
+			{state: PreviewValuePresent, value: "application/first"},
+			{state: PreviewValueOmitted},
+		}, orderedHeader.Values())
+	})
+}
+
+type previewPreparationCause struct {
+	secret string
+}
+
+func (e *previewPreparationCause) Error() string {
+	return "preparation cause contains " + e.secret
+}
+
+type previewPreparationAdversarialError struct {
+	isCalls       *atomic.Int64
+	unwrapCalls   *atomic.Int64
+	panicOnIs     bool
+	panicOnUnwrap bool
+	blockOnIs     <-chan struct{}
+	blockOnUnwrap <-chan struct{}
+}
+
+func (*previewPreparationAdversarialError) Error() string {
+	return "opaque preparation error"
+}
+
+func (e *previewPreparationAdversarialError) Is(error) bool {
+	if e.isCalls != nil {
+		e.isCalls.Add(1)
+	}
+	if e.panicOnIs {
+		panic("adversarial Is called")
+	}
+	if e.blockOnIs != nil {
+		<-e.blockOnIs
+	}
+	return false
+}
+
+func (e *previewPreparationAdversarialError) Unwrap() error {
+	if e.unwrapCalls != nil {
+		e.unwrapCalls.Add(1)
+	}
+	if e.panicOnUnwrap {
+		panic("adversarial Unwrap called")
+	}
+	if e.blockOnUnwrap != nil {
+		<-e.blockOnUnwrap
+	}
+	return ErrInvalidConfigValue
+}
+
+type previewPreparationValue struct {
+	cause error
+}
+
+func (v previewPreparationValue) EncodeValues(string, *url.Values) error {
+	return v.cause
+}
+
+func TestRequestPreviewTypedBodyWithoutPreparationMediaKeepsContentTypeError(t *testing.T) {
+	var encoderCalls atomic.Int64
+	builder := newTestClient(t, WithJSONEncoder(countingEncoder{calls: &encoderCalls})).
+		Post("https://example.com").JSON(struct{}{}).DelHeader("Content-Type")
+
+	preview, err := builder.Preview(t.Context())
+
+	assert.Nil(t, preview)
+	assert.ErrorIs(t, err, ErrUnsupportedContentType)
+	assert.Zero(t, encoderCalls.Load())
+}
+
+func TestRequestPreviewDoesNotEnterDeliveryCollaborators(t *testing.T) {
+	var transportCalls atomic.Int64
+	var middlewareCalls atomic.Int64
+	var jarCalls atomic.Int64
+	var retryCalls atomic.Int64
+	var backoffCalls atomic.Int64
+	var redirectCalls atomic.Int64
+	var proxyCalls atomic.Int64
+	logger := &mockLogger{}
+	jar := &previewCookieJar{calls: &jarCalls}
+	proxySelector := func(*http.Request) (*url.URL, error) {
+		proxyCalls.Add(1)
+		return nil, nil
+	}
+	transport := &http.Transport{
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			transportCalls.Add(1)
+			return nil, errors.New("transport must not run")
+		},
+	}
+	client := newTestClient(t,
+		WithTransport(transport),
+		WithCookieJar(jar),
+		WithLogger(logger),
+		WithMiddleware(func(next MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+			return func(req *http.Request) (*http.Response, error) {
+				middlewareCalls.Add(1)
+				return next(req)
+			}
+		}),
+		WithRetry(RetryPolicy{
+			Max: 1,
+			Backoff: func(int) time.Duration {
+				backoffCalls.Add(1)
+				return 0
+			},
+			ShouldRetry: func(*http.Request, *http.Response, error) bool {
+				retryCalls.Add(1)
+				return true
+			},
+		}),
+		WithRedirectPolicy(&previewRedirectPolicy{calls: &redirectCalls}),
+		WithProxySelector(proxySelector),
+	)
+
+	preview, err := client.Post("https://example.com").Text("payload").Preview(t.Context())
+
+	require.NoError(t, err)
+	assert.NotNil(t, preview)
+	assert.Zero(t, transportCalls.Load())
+	assert.Zero(t, middlewareCalls.Load())
+	assert.Zero(t, jarCalls.Load())
+	assert.Zero(t, retryCalls.Load())
+	assert.Zero(t, backoffCalls.Load())
+	assert.Zero(t, redirectCalls.Load())
+	assert.Zero(t, proxyCalls.Load())
+	assert.Empty(t, logger.Errors)
+	assert.Empty(t, logger.Infos)
+}
+
+type previewCookieJar struct {
+	calls *atomic.Int64
+}
+
+func (j *previewCookieJar) SetCookies(*url.URL, []*http.Cookie) {
+	j.calls.Add(1)
+}
+
+func (j *previewCookieJar) Cookies(*url.URL) []*http.Cookie {
+	j.calls.Add(1)
+	return nil
+}
+
+type previewRedirectPolicy struct {
+	calls *atomic.Int64
+}
+
+func (p *previewRedirectPolicy) Apply(*http.Request, []*http.Request) error {
+	p.calls.Add(1)
+	return nil
+}
+
+func TestRequestPreviewLeavesBuilderUsableForIndependentSend(t *testing.T) {
+	var received string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		received = string(data)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	builder := newTestClient(t).Post(server.URL).Text("payload")
+	preview, err := builder.Preview(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, PreviewBodyText, preview.Body().Kind())
+
+	response, err := builder.Send(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusNoContent, response.StatusCode())
+	assert.Equal(t, "payload", received)
+}
+
+type previewCountingAuth struct {
+	validCalls *atomic.Int64
+	applyCalls *atomic.Int64
+}
+
+func (a previewCountingAuth) Valid() bool {
+	a.validCalls.Add(1)
+	return true
+}
+
+func (a previewCountingAuth) Apply(*http.Request) {
+	a.applyCalls.Add(1)
 }
 
 func TestSendResolvesBaseURLAndRequestPath(t *testing.T) {

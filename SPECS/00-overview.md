@@ -2,13 +2,19 @@
 
 ## Overview
 
-`requests` defines a fluent HTTP client around `Client`, `RequestBuilder`, `Response`, and `StreamResponse`. This spec defines the package boundaries and the request lifecycle that the other `SPECS/*.md` files refine.
+`requests` defines a fluent HTTP client around `Client`, `RequestBuilder`,
+`Response`, and `StreamResponse`, with a detached `RequestPreview` value for
+pre-delivery inspection. This spec defines the package boundaries and the
+request lifecycle that the other `SPECS/*.md` files refine.
 
 ## Public Model
 
 - `Client` owns reusable configuration: base URL, default headers and cookies, auth, retry policy, codecs, logger, and transport settings.
 - `RequestBuilder` owns one outbound request's method, path, request-local
   metadata, body, timeout, retries, buffered response limit, and middleware.
+- `RequestPreview` is a detached, policy-filtered projection of a builder before
+  delivery. It is a value result, not a fifth delivery lifecycle or a prepared
+  request.
 - `Response` exposes the buffered result of one `Send` call.
 - `StreamResponse` exposes the unbuffered result of one `SendStream` call.
 - Middleware, redirect policies, and proxy selection affect request delivery. They do not change the public roles of `Client`, `RequestBuilder`, `Response`, or `StreamResponse`.
@@ -22,10 +28,11 @@
 1. Construct a client with `New`.
 2. Create a builder with `NewRequestBuilder` or an HTTP verb helper such as `Get` or `Post`.
 3. Populate request-local state on the builder.
-4. Call `Send(ctx)` for a buffered response or `SendStream(ctx)` for a caller-owned stream. Both snapshot the client state before dispatch.
-5. Resolve path, query, body, auth, headers, and cookies from the builder plus the client snapshot.
-6. Execute middleware and retry policy around the transport attempt.
-7. Return a `Response` with a buffered body or a `StreamResponse` with an open body the caller must close.
+4. Optionally call `Preview(ctx)` to obtain a detached structural projection. Preview does not send, consume, or freeze the builder, and it does not run delivery collaborators.
+5. Call `Send(ctx)` for a buffered response or `SendStream(ctx)` for a caller-owned stream. These operations snapshot the client state before dispatch.
+6. Resolve path, query, body, auth, headers, and cookies from the builder plus the client snapshot.
+7. Execute middleware and retry policy around the transport attempt.
+8. Return a `Response` with a buffered body or a `StreamResponse` with an open body the caller must close.
 
 ## Boundary Rules
 
@@ -39,14 +46,20 @@
 - `SPECS/31-public-surface-decisions.md` defines cross-cutting public API
   surface decisions and forbidden removed-surface aliases.
 
+`SPECS/21-request-builder-api-specs.md` is the canonical authority for the
+`RequestPreview` result, its omission policy, and its no-delivery boundary.
+
 ## Forbidden
 
 - Do not put one-shot request state on `Client` when it belongs on `RequestBuilder`.
 - Do not assume mutating `Client` after `Send` starts can change an in-flight request.
+- Do not treat `RequestPreview` as an exact wire request, a post-middleware
+  request, or a sendable prepared request.
 - Do not define the same public rule in multiple specs; each concept belongs in exactly one file.
 
 ## Contract Invariants
 
 - The client, builder, buffered response, and stream response roles are distinct.
 - The snapshot point is explicit.
+- Preview is a detached, no-delivery projection and does not alter the builder.
 - Delivery concerns are delegated to the dedicated specs.

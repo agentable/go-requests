@@ -1,6 +1,6 @@
 # go-requests
 
-Fluent HTTP client library for Go built around `Client`, `RequestBuilder`, `Response`, and `StreamResponse`. It wraps `net/http` with builder-style request construction, retries, redirects, proxy controls, middleware, caller-owned streaming, ordered-header intent, coherent profiles, and JSON/XML/YAML codecs.
+Fluent HTTP client library for Go built around `Client`, `RequestBuilder`, `Response`, and `StreamResponse`, with a detached `RequestPreview` projection for pre-delivery inspection. It wraps `net/http` with builder-style request construction, retries, redirects, proxy controls, middleware, caller-owned streaming, ordered-header intent, coherent profiles, and JSON/XML/YAML codecs.
 
 For usage examples and installation, see [README.md](README.md).
 
@@ -40,6 +40,7 @@ go-requests/
 ├── transport.go     # Standard transport cloning, HTTP/2, dialing, and connection pools
 ├── tls.go           # TLS configuration, certificates, and root CAs
 ├── request.go       # RequestBuilder state, URL resolution, and request metadata
+├── request_preview.go # Detached structural request projection and policy-filtered accessors
 ├── body.go          # Request body selection, encoding, snapshots, and replay preparation
 ├── delivery.go      # Request-local delivery policy, retries, and buffered/stream dispatch
 ├── response.go      # Buffered responses, decoding helpers, save, TLS, and line iteration
@@ -71,6 +72,8 @@ The root module is `github.com/agentable/go-requests`. Extension modules are ind
 - Treat `UnsafeHTTPClient` and `Raw` methods as explicit mutable escape hatches, not normal integration paths.
 - Prove behavior with focused tests first, then run the smallest wider gate that covers the changed surface.
 - Do not create policy-only scripts or tests that merely mirror SPECS without proving runtime behavior.
+- Keep `RequestBuilder.Preview` as one detached, structural-only projection; read `SPECS/21-request-builder-api-specs.md` before changing its contract.
+- Keep Preview out of delivery: it must not invoke middleware, transport, auth, encoders, readers, multipart producers, request serialization, or logging.
 - Fail loudly with returned errors; do not hide invalid construction in logs or request-time surprises.
 
 ## Agent Workflow
@@ -144,6 +147,7 @@ Specification documents in [`SPECS/`](SPECS/) define system contracts, API rules
 - **Core stays light**: optional browser headers, TLS fingerprints, and HTTP/3 live in extension modules so ordinary users do not pay their dependency cost.
 - **Request snapshot model**: once `Send` starts, later `Client` mutations must not affect the in-flight request.
 - **Caller-owned helpers**: value-like helpers return snapshots or copies; raw mutation is named `Raw` or `Unsafe`.
+- **Detached preview**: `RequestBuilder.Preview` returns policy-filtered value data, never a raw, prepared, replayable, or sendable request.
 
 ## Coding Rules
 
@@ -188,6 +192,7 @@ Specification documents in [`SPECS/`](SPECS/) define system contracts, API rules
 - No feature creep — only implement behavior supported by the package contracts.
 - No per-request TLS or protocol mutation.
 - No compatibility aliases for removed request, response, cache, profile, or raw-client APIs.
+- No raw/prepared/sendable request result, body rewind handle, or caller-controlled disclosure flag for Preview.
 - No hidden dependency bloat in the root module; heavy optional protocols belong in extension modules.
 - No encoding spec prose as runtime code; keep rules in `SPECS/` and executable behavior in source.
 - No working around dependency bugs — if a dependency is the problem, write a report in `reports/` instead of reimplementing it here.

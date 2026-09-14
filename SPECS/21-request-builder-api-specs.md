@@ -13,6 +13,109 @@ A builder is created by either:
 
 A builder is mutable until `Send(ctx)` is called.
 
+## Request Preview
+
+`Preview(ctx)` returns `(*RequestPreview, error)` as a synchronous, detached
+projection of the builder before delivery:
+
+```go
+preview, err := client.Post("/resources").
+	Bytes(body).
+	ContentType("application/json").
+	Preview(ctx)
+if err != nil {
+	return err
+}
+```
+
+Preview reads one client snapshot and does not send, freeze, or write back to
+the builder. It is not an exact wire request, a post-middleware request, a
+complete delivery validation, a prepared request, or a body that can be sent
+later. Calling `Preview` does not prevent a later independent `Send` or
+`SendStream` on the same builder.
+
+`RequestPreview` exposes these facts through accessors:
+
+- `Method` returns the effective method; an empty method is reported as `GET`.
+- `Target` returns scheme and host plus a path value whose state is
+  `omitted-by-policy`. `URL` returns a detached URL containing only safe scheme
+  and host structure; userinfo, path, query, opaque data, and fragments are
+  absent.
+- `Query` returns sorted query keys and preserves each key's value multiplicity.
+  Query values are `omitted-by-policy`.
+- `Headers` returns semantic header names and values. Header values are
+  `omitted-by-policy` except for the single `Header.Get("Content-Type")` value;
+  additional same-name values remain omitted. `OrderedHeaders` preserves
+  ordered-header intent and the same value policy; pseudo-headers remain
+  intent metadata.
+- `Cookies` returns cookie names in precedence order. Cookie values are always
+  `omitted-by-policy`. Names derived from `Cookie` headers use the same
+  acceptance, invalid-name/value filtering, and cookie-count behavior as a
+  pure `http.Request.Cookies()` call. Explicit client and request-local
+  `*http.Cookie` names are included only when `http.Cookie.Valid` accepts the
+  name; Preview does not use `AddCookie` or serialization to sanitize them.
+  This is intentionally not the delivery wire-valid cookie set: Preview
+  validates and retains only a legal name for an explicit typed `*http.Cookie`
+  and omits its value. Preview never consults a `CookieJar`; `Cookie` headers
+  continue to be parsed with `http.Request.Cookies()` rules.
+- `ContentType` returns the final semantic `Content-Type` header value. It is
+  independent from `PreviewBody.MediaType`, which describes the selected body
+  vocabulary before header precedence. When multipart's generated content type
+  remains active, Preview omits this semantic value because it does not create
+  the automatic boundary; client defaults and headers set before `Multipart`
+  are not reported as final values. An explicit `ContentType` after `Multipart`
+  remains the final semantic value.
+- `Body` returns the selected body kind, presence, structural media type,
+  static length/replayability facts, and an optional multipart
+  manifest. Body values are `omitted-by-policy` whenever a body is selected.
+
+`PreviewValue.State` distinguishes `unknown`, `omitted-by-policy`, and
+`present`; `PreviewValue.Value` returns an empty string unless the state is
+`present` (a present value itself may be empty). The
+following body rules are fixed:
+
+| Body selection | Preview result | Static validation and ownership |
+| --- | --- | --- |
+| No body | `PreviewBodyNone`, unknown presence | No body is opened or created |
+| `Text`, `Bytes` | Kind, selection media type, present selection, omitted value; length is known from the in-memory input | Empty selections remain present; body is known replayable |
+| URL-encoded form | Kind, selection media type, present selection, omitted value; length remains unknown | Preview does not execute form serialization; body is known replayable |
+| `JSON`, `XML`, `YAML` | Kind, selection media type, present selection, omitted value; length is unknown and replayability is known | Encoder and input marshal hooks are not called; missing semantic `Content-Type` returns `ErrUnsupportedContentType` |
+| Opaque `Reader` | Kind, optional media type, present selection, omitted value | `Read`, `ReadAt`, `Seek`, `Size`, and `Close` are not called; replayability and length remain unknown |
+| `Multipart` | Selection media type and a detached manifest | No generated boundary, pipe, producer, part read, or part close; negative replay limits, invalid explicit boundaries, empty file fields, and nil/typed-nil part bodies are checked |
+
+The multipart manifest sorts field names while preserving each field's value
+multiplicity, preserves file-part order, and exposes only file field name,
+filename, and explicit content type. An explicitly configured boundary is
+present; an automatically generated boundary is unknown because Preview never
+generates it. `Replayable(maxBytes)` is reflected as known replayability, but
+replay-size overflow remains a delivery-time failure because Preview does not
+read parts.
+
+All returned slices, URLs, and nested manifests are detached. Accessors return
+copies, and no result retains a builder, client, body source, auth method,
+encoder, or other caller-owned collaborator.
+
+Preview reports retained fluent preparation failures through a fixed-text,
+Preview-only error before taking a client snapshot. It preserves `errors.Is`
+for package-owned preparation classifications such as
+`ErrInvalidConfigValue` and `ErrUnsupportedFormFieldsType`, but does not unwrap
+arbitrary caller or library causes or expose them through `errors.As`. `Send`
+and `SendStream` continue to return the original retained preparation cause. A
+nil context returns `ErrRequestCreationFailed` without calling any context
+method. A pre-canceled context or expired deadline preserves `context.Canceled`
+or `context.DeadlineExceeded` and therefore the existing
+`IsCanceled`/`IsTimeout` classifications. A request-local timeout is applied
+only when the caller context has no deadline. Invalid method or URL preflight
+returns `ErrRequestCreationFailed` without caller URL text; unsupported auth
+implementations fail closed with `ErrInvalidConfigValue` without calling
+`Valid` or `Apply`.
+
+Preview never invokes middleware, cookie jars, retry or backoff callbacks,
+redirect policies, proxy selectors, transports, loggers, body encoders,
+readers, multipart producers, `Request.AddCookie`, or standard-library request
+serialization. It does not replace the delivery lifecycle and has no caller
+cleanup obligation.
+
 ## Preparation Errors
 
 Fluent helpers that cannot return an error directly retain the first
@@ -187,8 +290,11 @@ errors have the same no-open guarantee. The library does not read or close a
 caller body source on these preflight failures.
 
 URL preflight and terminal transport errors omit URL userinfo, query values,
-and fragments from returned and logged diagnostics. Their wrapped causes and
-standard `errors.Is` / `errors.As` classifications remain inspectable.
+and fragments from returned and logged diagnostics. `Preview` returns a fixed
+`ErrRequestCreationFailed` for invalid method or URL preflight and does not
+expose the underlying cause. `Send` and `SendStream` retain or wrap their
+existing request-creation causes; terminal transport causes and standard
+`errors.Is` / `errors.As` classifications remain inspectable.
 
 `SendStream(ctx)` follows the same preparation and delivery path, but returns a `StreamResponse` without buffering the response body. The caller must close the stream response.
 
