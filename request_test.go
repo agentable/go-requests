@@ -1435,7 +1435,10 @@ func (v previewPreparationValue) EncodeValues(string, *url.Values) error {
 
 func TestRequestPreviewTypedBodyWithoutPreparationMediaKeepsContentTypeError(t *testing.T) {
 	var encoderCalls atomic.Int64
-	builder := newTestClient(t, WithJSONEncoder(countingEncoder{calls: &encoderCalls})).
+	builder := newTestClient(t,
+		WithContentType("application/json"),
+		WithJSONEncoder(countingEncoder{calls: &encoderCalls}),
+	).
 		Post("https://example.com").JSON(struct{}{}).DelHeader("Content-Type")
 
 	preview, err := builder.Preview(t.Context())
@@ -3632,22 +3635,20 @@ func TestAuthRequest(t *testing.T) {
 
 // TestDelCookie_SingleCookie tests deleting a single cookie
 func TestDelCookie_SingleCookie(t *testing.T) {
-	builder := &RequestBuilder{
-		cookies: []*http.Cookie{
-			{Name: "sessionid", Value: "abc123"},
-			{Name: "userid", Value: "user456"},
-			{Name: "theme", Value: "dark"},
-		},
-	}
+	builder := newTestClient(t).Get("/").
+		Cookie("sessionid", "abc123").
+		Cookie("userid", "user456").
+		Cookie("theme", "dark")
 
 	builder.DelCookie("userid")
+	cookies := builder.metadata.cookieValues()
 
 	// Should have 2 cookies remaining
-	assert.Len(t, builder.cookies, 2)
+	assert.Len(t, cookies, 2)
 
 	// Verify the correct cookies remain
-	cookieNames := make([]string, len(builder.cookies))
-	for i, cookie := range builder.cookies {
+	cookieNames := make([]string, len(cookies))
+	for i, cookie := range cookies {
 		cookieNames[i] = cookie.Name
 	}
 
@@ -3658,89 +3659,80 @@ func TestDelCookie_SingleCookie(t *testing.T) {
 
 // TestDelCookie_MultipleCookies tests deleting multiple cookies at once
 func TestDelCookie_MultipleCookies(t *testing.T) {
-	builder := &RequestBuilder{
-		cookies: []*http.Cookie{
-			{Name: "A", Value: "1"},
-			{Name: "B", Value: "2"},
-			{Name: "C", Value: "3"},
-			{Name: "D", Value: "4"},
-			{Name: "E", Value: "5"},
-		},
-	}
+	builder := newTestClient(t).Get("/").
+		Cookie("A", "1").
+		Cookie("B", "2").
+		Cookie("C", "3").
+		Cookie("D", "4").
+		Cookie("E", "5")
 
 	// Delete multiple cookies including consecutive ones
 	builder.DelCookie("B", "C", "E")
+	cookies := builder.metadata.cookieValues()
 
 	// Should have 2 cookies remaining
-	assert.Len(t, builder.cookies, 2)
+	assert.Len(t, cookies, 2)
 
 	// Verify the correct cookies remain
-	assert.Equal(t, "A", builder.cookies[0].Name)
-	assert.Equal(t, "D", builder.cookies[1].Name)
+	assert.Equal(t, "A", cookies[0].Name)
+	assert.Equal(t, "D", cookies[1].Name)
 }
 
 // TestDelCookie_ConsecutiveCookies specifically tests the bug case
 func TestDelCookie_ConsecutiveCookies(t *testing.T) {
-	builder := &RequestBuilder{
-		cookies: []*http.Cookie{
-			{Name: "keep1", Value: "1"},
-			{Name: "delete1", Value: "2"},
-			{Name: "delete2", Value: "3"},
-			{Name: "delete3", Value: "4"},
-			{Name: "keep2", Value: "5"},
-		},
-	}
+	builder := newTestClient(t).Get("/").
+		Cookie("keep1", "1").
+		Cookie("delete1", "2").
+		Cookie("delete2", "3").
+		Cookie("delete3", "4").
+		Cookie("keep2", "5")
 
 	// This would fail with the old buggy implementation
 	builder.DelCookie("delete1", "delete2", "delete3")
+	cookies := builder.metadata.cookieValues()
 
 	// Should have 2 cookies remaining
-	assert.Len(t, builder.cookies, 2)
+	assert.Len(t, cookies, 2)
 
 	// Verify the correct cookies remain
-	assert.Equal(t, "keep1", builder.cookies[0].Name)
-	assert.Equal(t, "keep2", builder.cookies[1].Name)
+	assert.Equal(t, "keep1", cookies[0].Name)
+	assert.Equal(t, "keep2", cookies[1].Name)
 }
 
 // TestDelCookie_NonExistentCookie tests deleting non-existent cookies
 func TestDelCookie_NonExistentCookie(t *testing.T) {
-	builder := &RequestBuilder{
-		cookies: []*http.Cookie{
-			{Name: "existing", Value: "value"},
-		},
-	}
+	builder := newTestClient(t).Get("/").Cookie("existing", "value")
 
 	builder.DelCookie("nonexistent")
+	cookies := builder.metadata.cookieValues()
 
 	// Should still have the original cookie
-	assert.Len(t, builder.cookies, 1)
-	assert.Equal(t, "existing", builder.cookies[0].Name)
+	assert.Len(t, cookies, 1)
+	assert.Equal(t, "existing", cookies[0].Name)
 }
 
 // TestDelCookie_DuplicateKeys tests deleting with duplicate keys
 func TestDelCookie_DuplicateKeys(t *testing.T) {
-	builder := &RequestBuilder{
-		cookies: []*http.Cookie{
-			{Name: "keep1", Value: "1"},
-			{Name: "delete", Value: "2"},
-			{Name: "keep2", Value: "3"},
-		},
-	}
+	builder := newTestClient(t).Get("/").
+		Cookie("keep1", "1").
+		Cookie("delete", "2").
+		Cookie("keep2", "3")
 
 	builder.DelCookie("delete", "delete")
+	cookies := builder.metadata.cookieValues()
 
-	assert.Len(t, builder.cookies, 2)
-	assert.Equal(t, "keep1", builder.cookies[0].Name)
-	assert.Equal(t, "keep2", builder.cookies[1].Name)
+	assert.Len(t, cookies, 2)
+	assert.Equal(t, "keep1", cookies[0].Name)
+	assert.Equal(t, "keep2", cookies[1].Name)
 }
 
 // TestDelCookie_EmptyCookies tests deleting from empty cookie slice
 func TestDelCookie_EmptyCookies(t *testing.T) {
-	builder := &RequestBuilder{}
+	builder := newTestClient(t).Get("/")
 
 	// Should not panic
 	builder.DelCookie("any")
 
 	// Should remain nil
-	assert.Nil(t, builder.cookies)
+	assert.Nil(t, builder.metadata.cookies)
 }

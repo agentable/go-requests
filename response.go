@@ -44,7 +44,7 @@ func newResponse(
 		response.logger = snap.logger
 	}
 
-	if err := response.handleNonStream(maxBodyBytes); err != nil {
+	if err := response.bufferBody(maxBodyBytes); err != nil {
 		return nil, err
 	}
 	return response, nil
@@ -55,7 +55,7 @@ func (r *Response) Raw() *http.Response {
 	return r.rawResponse
 }
 
-func (r *Response) handleNonStream(maxBodyBytes int64) error {
+func (r *Response) bufferBody(maxBodyBytes int64) error {
 	buf := getBuffer()
 	defer putBuffer(buf)
 	defer r.rawResponse.Body.Close() //nolint:errcheck // buffered response ownership treats close as best-effort
@@ -325,7 +325,7 @@ func (r *Response) Save(v any) error {
 	case io.Writer:
 		return r.saveToWriter(p)
 	default:
-		return ErrNotSupportSaveMethod
+		return ErrUnsupportedSaveType
 	}
 }
 

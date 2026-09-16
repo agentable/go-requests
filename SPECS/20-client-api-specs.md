@@ -75,6 +75,19 @@ cookie-merge rules are owned by
 Client defaults are not mutated through public runtime setters; callers derive
 a modified client with `Clone(opts...)`.
 
+`WithBaseURL(string)` remains the ordinary legacy configuration entry and its
+base URL pathname, query, and userinfo data are private in
+`RequestPreparation`; base URL fragments remain rejected during construction.
+The initial `RequestPreparation` contract
+does not add a disclosure-aware base URL option: base URL provenance is a client
+configuration concern, and there is no repository owner callsite that justifies
+freezing another public option. `GetBaseURL` remains the explicit configuration
+escape hatch and is outside the preparation projection. Structural scheme and
+authority facts are a narrow safety exception and may still follow the existing
+`RequestPreview` policy (authority excludes userinfo), but Prepare never publishes
+base URL pathname, query, or userinfo data merely because the client was
+configured with a string.
+
 `WithHeaders(http.Header)` captures a clone when the option is applied. A nil
 header is an empty default set, and later mutation of the caller's map or value
 slices cannot change the client. `Client.Clone` owns another independent header

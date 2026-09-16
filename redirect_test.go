@@ -651,8 +651,8 @@ func TestGetHostname(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(fmt.Sprintf("getHostname(%s)", tt.input), func(t *testing.T) {
-			assert.Equal(t, tt.expected, getHostname(tt.input))
+		t.Run(fmt.Sprintf("hostname(%s)", tt.input), func(t *testing.T) {
+			assert.Equal(t, tt.expected, hostname(tt.input))
 		})
 	}
 }

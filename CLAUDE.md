@@ -1,6 +1,12 @@
 # go-requests
 
-Fluent HTTP client library for Go built around `Client`, `RequestBuilder`, `Response`, and `StreamResponse`, with a detached `RequestPreview` projection for pre-delivery inspection. It wraps `net/http` with builder-style request construction, retries, redirects, proxy controls, middleware, caller-owned streaming, ordered-header intent, coherent profiles, and JSON/XML/YAML codecs.
+Fluent HTTP client library for Go built around `Client`, `RequestBuilder`,
+`Response`, and `StreamResponse`, with detached `RequestPreview` and
+`RequestPreparation` projections for pre-delivery inspection. `Preview` is
+structural-only; `Prepare` is a sanitized, retained-byte-limited no-send
+projection. The package wraps `net/http` with builder-style request
+construction, retries, redirects, proxy controls, middleware, caller-owned
+streaming, ordered-header intent, coherent profiles, and JSON/XML/YAML codecs.
 
 For usage examples and installation, see [README.md](README.md).
 
@@ -40,7 +46,11 @@ go-requests/
 ├── transport.go     # Standard transport cloning, HTTP/2, dialing, and connection pools
 ├── tls.go           # TLS configuration, certificates, and root CAs
 ├── request.go       # RequestBuilder state, URL resolution, and request metadata
+├── request_metadata.go # Tagged request metadata and occurrence snapshots
+├── request_value.go # Owner disclosure values and safe formatting
+├── request_plan.go  # Shared private request facts for Preview, Prepare, and delivery
 ├── request_preview.go # Detached structural request projection and policy-filtered accessors
+├── request_preparation.go # Detached sanitized no-send projection and retained-byte inspection
 ├── body.go          # Request body selection, encoding, snapshots, and replay preparation
 ├── delivery.go      # Request-local delivery policy, retries, and buffered/stream dispatch
 ├── response.go      # Buffered responses, decoding helpers, save, TLS, and line iteration
@@ -73,7 +83,11 @@ The root module is `github.com/agentable/go-requests`. Extension modules are ind
 - Prove behavior with focused tests first, then run the smallest wider gate that covers the changed surface.
 - Do not create policy-only scripts or tests that merely mirror SPECS without proving runtime behavior.
 - Keep `RequestBuilder.Preview` as one detached, structural-only projection; read `SPECS/21-request-builder-api-specs.md` before changing its contract.
+- Keep `RequestBuilder.Prepare` as a separate sanitized no-send projection; read `SPECS/21-request-builder-api-specs.md` and `SPECS/31-public-surface-decisions.md` before changing its public contract.
 - Keep Preview out of delivery: it must not invoke middleware, transport, auth, encoders, readers, multipart producers, request serialization, or logging.
+- Keep `RequestBuilder.Prepare` separate from Preview and delivery: only explicitly owner-approved, eligible body bytes may be retained in `PreparedBody.Data` under `MaxPreparedBodyBytes`; metadata follows the disclosure policy separately. It returns a detached sanitized DTO, never a raw/sendable request or a reveal switch.
+- Prepare never encodes typed JSON/XML/YAML, reads or closes opaque readers, or opens/reads/closes borrowed multipart parts. Its body-byte budget limits retained result bytes, not transient or total process memory.
+- Callers must not concurrently mutate a builder or its referenced mutable/borrowed inputs while any request exit is running.
 - Fail loudly with returned errors; do not hide invalid construction in logs or request-time surprises.
 
 ## Agent Workflow
@@ -147,7 +161,7 @@ Specification documents in [`SPECS/`](SPECS/) define system contracts, API rules
 - **Core stays light**: optional browser headers, TLS fingerprints, and HTTP/3 live in extension modules so ordinary users do not pay their dependency cost.
 - **Request snapshot model**: once `Send` starts, later `Client` mutations must not affect the in-flight request.
 - **Caller-owned helpers**: value-like helpers return snapshots or copies; raw mutation is named `Raw` or `Unsafe`.
-- **Detached preview**: `RequestBuilder.Preview` returns policy-filtered value data, never a raw, prepared, replayable, or sendable request.
+- **Detached inspection**: `Preview` stays structural-only; `Prepare` is a separate sanitized projection with a retained-byte limit. Neither returns a raw/sendable `*http.Request`, replay handle, or caller-controlled disclosure switch.
 
 ## Coding Rules
 
@@ -192,7 +206,7 @@ Specification documents in [`SPECS/`](SPECS/) define system contracts, API rules
 - No feature creep — only implement behavior supported by the package contracts.
 - No per-request TLS or protocol mutation.
 - No compatibility aliases for removed request, response, cache, profile, or raw-client APIs.
-- No raw/prepared/sendable request result, body rewind handle, or caller-controlled disclosure flag for Preview.
+- No raw or sendable `*http.Request`, body rewind/replay handle, or caller-controlled reveal/disclosure switch from Preview or Prepare; the detached `RequestPreparation` DTO is the supported no-send result.
 - No hidden dependency bloat in the root module; heavy optional protocols belong in extension modules.
 - No encoding spec prose as runtime code; keep rules in `SPECS/` and executable behavior in source.
 - No working around dependency bugs — if a dependency is the problem, write a report in `reports/` instead of reimplementing it here.

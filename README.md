@@ -1,20 +1,35 @@
 # go-requests
 [![License](https://img.shields.io/badge/license-Agentable%20Commercial-blue.svg?style=flat-square)](LICENSE)
 
+A fluent HTTP client library for Go that builds, inspects, and delivers requests with middleware, retries, transport controls, streaming, ordered headers, profiles, and JSON/XML/YAML helpers
 
-A fluent HTTP client library for Go with middleware, retries, proxy and redirect controls, caller-owned streaming, ordered-header intent, optional client profiles, and JSON/XML/YAML helpers.
+## Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Examples](#examples)
+- [Choose a request exit](#choose-a-request-exit)
+- [Configuration](#configuration)
+- [Making Requests](#making-requests)
+- [Retries and Delivery](#retries-and-delivery)
+- [net/http Integration](#nethttp-integration)
+- [Responses](#responses)
+- [Streaming](#streaming)
+- [Documentation](#documentation)
+- [Development](#development)
 
 ## Features
 
-- **Fluent request builder**: Chain path params, query params, headers, cookies, auth, body encoding, and per-request retry settings.
+- **Fluent request builder**: Chain paths, parameters, headers, cookies, authentication, bodies, and request-local delivery settings.
 - **Validated construction**: Build clients with `New(...)`; malformed options return errors before any request is sent.
 - **Retry-aware delivery**: Combine retry counts, backoff strategies, and `Retry-After` handling without wrapping `net/http` yourself.
 - **Transport controls**: Configure TLS, mTLS, HTTP/2, redirect policies, proxies, bypass rules, resolver/dialer hooks, and connection pooling.
 - **Ordered headers**: Express header order as request intent with `orderedobject`, while preserving `net/http` header semantics.
-- **Safe request preview**: Inspect method, target structure, metadata shape, and body facts before delivery without sending or consuming caller-owned values.
-- **Optional extensions**: Apply browser-like headers and TLS ClientHello fingerprints as profiles, or install an explicit caller-owned HTTP/3 transport.
-- **`net/http` handoff**: Pass a caller-owned snapshot of standard client configuration to other SDKs.
-- **Response helpers**: Bound buffered responses, decode JSON/XML/YAML, inspect diagnostics, iterate lines, or save to disk without accepting truncated data.
+- **Safe request inspection**: Use detached `Preview` and `Prepare` projections before delivery without sending or consuming caller-owned values.
+- **Optional profiles and transports**: Apply browser-like headers or TLS fingerprints, or install an explicit caller-owned HTTP/3 transport.
+- **`net/http` integration**: Hand a configured client or transport to another SDK through a snapshot.
+- **Responses and streaming**: Bound buffered responses, decode JSON/XML/YAML, save data, inspect diagnostics, or iterate caller-owned streams.
 - **Composable middleware**: Attach header or cookie middleware at the client or request level.
 
 ## Installation
@@ -23,6 +38,7 @@ A fluent HTTP client library for Go with middleware, retries, proxy and redirect
 go get github.com/agentable/go-requests
 ```
 
+Requires **Go 1.27+**.
 
 Optional extension modules:
 
@@ -34,6 +50,8 @@ go get github.com/agentable/go-requests/http3
 
 ## Quick Start
 
+Use this path when an application needs one configured client, one request, and a decoded response. The example starts a local server, so it runs without an external API.
+
 ```go
 package main
 
@@ -41,6 +59,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"time"
 
 	"github.com/agentable/go-requests"
@@ -52,15 +72,23 @@ type Post struct {
 }
 
 func main() {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, "{\"id\":1,\"title\":\"hello\"}")
+	}))
+	defer server.Close()
+
 	client, err := requests.New(
-		requests.WithBaseURL("https://api.example.com"),
+		requests.WithBaseURL(server.URL),
 		requests.WithTimeout(10*time.Second),
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	resp, err := client.Get("/posts/{id}").PathParam("id", "1").Send(context.Background())
+	resp, err := client.Get("/posts/{id}").
+		PathParam("id", "1").
+		Send(context.Background())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -74,7 +102,36 @@ func main() {
 }
 ```
 
-## Client Construction
+The output is `1 hello`. This example performs one local HTTP request and
+decodes its response; replace `server.URL` with the API base URL in a real
+application.
+
+## Examples
+
+The runnable example in `examples/fetch-post` starts a local test server,
+fetches one Post, decodes its JSON response, and logs the result. It needs no
+network access or credentials.
+
+```bash
+go run ./examples/fetch-post
+```
+
+## Choose a request exit
+
+Build one request, then choose the exit that matches the caller's intent:
+
+| Need | Call | Network request |
+| --- | --- | --- |
+| Inspect structure only | `Preview(ctx)` | Never |
+| Inspect approved values before delivery | `Prepare(ctx, opts)` | Never |
+| Deliver a buffered response | `Send(ctx)` | Yes |
+| Deliver a caller-owned stream | `SendStream(ctx)` | Yes |
+
+`Preview` and `Prepare` return detached projections. They do not turn into a
+request that can be sent later; call `Send` or `SendStream` explicitly when
+delivery is intended.
+
+## Configuration
 
 ### Functional Options
 
@@ -190,12 +247,10 @@ if err != nil {
 
 ## Making Requests
 
-Builder helpers remain fluent even when encoding or validation can fail.
-`QueriesStruct`, `Form`, `FormFields`, request-local `Auth`, `AddMiddleware`,
-and negative request-local timeout, retry, or response-limit values retain the
-first preparation error. `Send` or `SendStream` returns it before encoding a
-body or dispatching a request. Logs are never the only error channel. Zero
-keeps the no-timeout, no-retry, and unlimited-buffer meanings.
+Build the request with fluent helpers, then choose `Preview`, `Prepare`,
+`Send`, or `SendStream` for the operation you need. Builder methods remain
+chainable; configuration and encoding errors return from the selected exit
+before delivery.
 
 The resolved URL, method, and context are validated by `net/http` before a
 streaming body is opened. Invalid request shape returns
@@ -203,10 +258,11 @@ streaming body is opened. Invalid request shape returns
 
 ### Preview a request before sending
 
-Use `Preview` when a CLI or SDK needs to inspect request structure before it
-decides to send. It performs no network or delivery work and keeps ordinary
-query, header, cookie, and body values omitted by policy; the final semantic
-`Content-Type` remains available as structural metadata.
+Use `Preview` when a CLI or SDK needs request structure before it decides to
+send. It performs no network or delivery work and keeps ordinary query,
+header, cookie, and body values omitted by policy; the final semantic
+`Content-Type` remains available as structural metadata. The examples below
+reuse the configured `client` from Quick Start.
 
 ```go
 preview, err := client.Post("/articles").
@@ -227,6 +283,63 @@ fmt.Println(len(preview.Query()[0].Values()))  // 1
 post-middleware request, or sendable prepared request. `Preview` does not
 consume readers or multipart parts, invoke encoders or auth methods, or change
 the builder; call `Send` or `SendStream` separately when delivery is wanted.
+
+### Prepare a request without sending
+
+Use `Prepare` for a dry-run or review flow when you need selected,
+owner-approved values before deciding whether to deliver. It never sends the
+request. Legacy values remain private; use `Public` only at an explicit owner
+boundary.
+
+```go
+preparation, err := client.Post("/articles/{id}").
+	PathValue(requests.Public("/articles/{id}")).
+	PathParamValue("id", requests.Public("42")).
+	QueryValue("include", requests.Public("comments")).
+	TextValue(requests.Public("approved body")).
+	Prepare(context.Background(), requests.PrepareOptions{
+		MaxPreparedBodyBytes: 1 << 20,
+	})
+if err != nil {
+	log.Fatal(err)
+}
+
+fmt.Println(preparation.Method())
+fmt.Println(preparation.Target().Path().Value())       // /articles/42
+fmt.Println(string(preparation.Body().Data().Bytes())) // approved body
+```
+
+The result is a detached, sanitized DTO. This call does not invoke the
+transport, middleware, auth method, encoder, reader, or multipart producer.
+For already encoded bytes, use the owned payload boundary:
+
+```go
+approved := requests.PublicPayload([]byte(`{"title":"approved"}`))
+builder := client.Post("/articles").BytesPayload(approved)
+```
+
+The other owner-aware setters (`PathValue`, `HeaderValue`,
+`AddHeaderValue`, `CookieValue`, and `FormFieldValue`) use the same explicit
+disclosure rule. `PathValue` can disclose only the complete resolved pathname;
+an ordinary `PathParam` remains private, and any private pathname contribution
+redacts the whole pathname. `Public` is a disclosure declaration, not an
+authorization mechanism. Credentials remain private even when passed through a
+public header setter, and a `Cookie` header is never split into public cookie
+values.
+
+`RequestPreparation` is a detached sanitized projection, not a final wire dump,
+`*http.Request`, replay handle, or sendable request. `Prepare` does not invoke
+middleware, cookie jars, retry or redirect callbacks, transports, loggers,
+auth methods, encoders, readers, or multipart part producers. Typed JSON, XML,
+and YAML bodies are reported structurally and are not encoded. An opaque reader
+is reported structurally with redacted data and is not read, sought, or closed.
+Multipart preparation returns a structural manifest with redacted values; it
+does not create a boundary or read a part. `MaxPreparedBodyBytes` limits only
+bytes retained in `PreparedBody.Data`; it is not a total-memory or
+transient-allocation limit. For example, form encoding may allocate its encoded
+result before Prepare checks it against the budget, and allocations made before
+the caller hands data to `PublicPayload` are outside the limit. Call `Send` or
+`SendStream` separately when delivery is wanted.
 
 ### Ordered headers
 
@@ -298,6 +411,12 @@ replaces the earlier body kind; repeated form-field calls remain additive.
 Typed bodies set their media type. `Bytes` keeps a caller-set `Content-Type`
 but removes a media type generated by the body it replaces.
 
+`TextValue` and `BytesPayload` select the same wire body kinds while marking
+owned in-memory data as eligible for `Prepare`. `FormFieldValue` can mark form
+occurrences individually, but any private occurrence keeps the retained form
+body redacted. Prepare never invokes a configured encoder or a typed value's
+marshal hook.
+
 ### Forms and files
 
 ```go
@@ -332,6 +451,11 @@ resp, err := client.Post("/upload").
 `FilePart.Body` is borrowed. The caller closes files and other owned sources;
 `requests` never closes them by dynamic type. The HTTP transport still owns and
 closes the outer request body for each attempt.
+
+Prepare does not open or close multipart parts. Its manifest keeps field names,
+value multiplicity, and file field order while withholding part values,
+filenames, content types, boundaries, and raw framing. Manifest order is a
+stable inspection order and does not redefine multipart wire order.
 
 Use `Replayable(maxBytes)` when a multipart request must be replayable for
 retries or 307/308 redirects:
@@ -620,7 +744,8 @@ returns a fixed `ErrRequestCreationFailed` for invalid method or URL preflight
 and does not expose the underlying cause. `Send` and `SendStream` retain or
 wrap their existing request-creation causes, while terminal transport causes
 and the classifications above remain available through the standard error
-chain.
+chain. `Prepare` returns sanitized detached data or a safe preparation error;
+it never exposes the original private value or a sendable request.
 
 ### Inspect diagnostics
 
@@ -666,7 +791,7 @@ if err != nil {
 ```
 
 Middleware may return without calling the next handler. In that case no
-transport owns the prepared request body, so `requests` closes it when the
+transport owns the materialized delivery body, so `requests` closes it when the
 middleware chain returns.
 
 ## Logging
@@ -710,7 +835,8 @@ task verify:all      # Run full root and extension verification
 
 ## Contributing
 
-Contributions are welcome. Keep changes focused. Run `task test` plus
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before
+opening a pull request. Keep changes focused. Run `task test` plus
 `task lint` for root-only changes, and `task test:all` plus `task lint:all`
 when a change touches extension modules or shared contracts.
 

@@ -30,12 +30,6 @@ func assertHTTP2Configured(t *testing.T, transport *http.Transport) {
 	assert.Contains(t, transport.TLSClientConfig.NextProtos, "http/1.1")
 }
 
-type testRoundTripperFunc func(*http.Request) (*http.Response, error)
-
-func (f testRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
-}
-
 func TestSetHTTPClient(t *testing.T) {
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie("X-Custom-Test-Cookie")

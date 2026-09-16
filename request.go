@@ -2,11 +2,9 @@ package requests
 
 import (
 	"errors"
-	"maps"
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 
@@ -18,13 +16,10 @@ import (
 type RequestBuilder struct {
 	client               *Client
 	method               string
-	path                 string
-	headers              *http.Header
+	target               requestTarget
+	metadata             requestMetadata
 	orderedHeaders       *orderedobject.Object[[]string]
-	cookies              []*http.Cookie
-	queries              url.Values
-	pathParams           map[string]string
-	body                 requestBodySelection
+	body                 requestBodyPlan
 	timeout              time.Duration
 	maxResponseBodyBytes int64
 	middlewares          []Middleware
@@ -155,11 +150,9 @@ func sanitizeDiagnosticURL(rawURL string) string {
 // NewRequestBuilder creates a new RequestBuilder with default settings.
 func (c *Client) NewRequestBuilder(method, path string) *RequestBuilder {
 	return &RequestBuilder{
-		client:  c,
-		method:  method,
-		path:    path,
-		queries: url.Values{},
-		headers: &http.Header{},
+		client: c,
+		method: method,
+		target: newRequestTarget(path),
 	}
 }
 
@@ -187,51 +180,39 @@ func (b *RequestBuilder) Method(method string) *RequestBuilder {
 
 // Path sets the URL path for the request.
 func (b *RequestBuilder) Path(path string) *RequestBuilder {
-	b.path = path
+	b.target.setPath(privateRequestValue(path))
+	return b
+}
+
+// PathValue replaces the complete request path with a disclosure-tagged value.
+// The path is still resolved and escaped by the same delivery resolver.
+func (b *RequestBuilder) PathValue(path Value) *RequestBuilder {
+	b.target.setPath(path)
 	return b
 }
 
 // PathParams sets multiple path params fields and their values at one go in the RequestBuilder instance.
 func (b *RequestBuilder) PathParams(params map[string]string) *RequestBuilder {
-	if b.pathParams == nil {
-		b.pathParams = make(map[string]string, len(params))
-	}
-	maps.Copy(b.pathParams, params)
+	b.target.setPathParams(params)
 	return b
 }
 
 // PathParam sets a single path param field and its value in the RequestBuilder instance.
 func (b *RequestBuilder) PathParam(key, value string) *RequestBuilder {
-	if b.pathParams == nil {
-		b.pathParams = map[string]string{}
-	}
-	b.pathParams[key] = value
+	b.target.setPathParam(key, value)
+	return b
+}
+
+// PathParamValue sets a path parameter with an explicit disclosure capability.
+func (b *RequestBuilder) PathParamValue(key string, value Value) *RequestBuilder {
+	b.target.setPathParamValue(key, value)
 	return b
 }
 
 // DelPathParam removes one or more path params fields from the RequestBuilder instance.
 func (b *RequestBuilder) DelPathParam(key ...string) *RequestBuilder {
-	if b.pathParams == nil {
-		return b
-	}
-	for _, k := range key {
-		delete(b.pathParams, k)
-	}
+	b.target.deletePathParams(key...)
 	return b
-}
-
-// preparePath replaces path parameters in the URL path.
-func (b *RequestBuilder) preparePath() string {
-	if b.pathParams == nil {
-		return b.path
-	}
-
-	preparedPath := b.path
-	for key, value := range b.pathParams {
-		placeholder := "{" + key + "}"
-		preparedPath = strings.ReplaceAll(preparedPath, placeholder, url.PathEscape(value))
-	}
-	return preparedPath
 }
 
 func resolveRequestURL(baseURL, requestPath string, queryValues url.Values) (*url.URL, error) {
@@ -304,7 +285,7 @@ func addQueryValues(requestURL *url.URL, queryValues url.Values) {
 func (b *RequestBuilder) Queries(params url.Values) *RequestBuilder {
 	for key, values := range params {
 		for _, value := range values {
-			b.queries.Add(key, value)
+			b.Query(key, value)
 		}
 	}
 	return b
@@ -312,15 +293,19 @@ func (b *RequestBuilder) Queries(params url.Values) *RequestBuilder {
 
 // Query adds a single query parameter to the request.
 func (b *RequestBuilder) Query(key, value string) *RequestBuilder {
-	b.queries.Add(key, value)
+	b.metadata.addQuery(key, privateRequestValue(value))
 	return b
 }
 
 // DelQuery removes one or more query parameters from the request.
 func (b *RequestBuilder) DelQuery(key ...string) *RequestBuilder {
-	for _, k := range key {
-		b.queries.Del(k)
-	}
+	b.metadata.deleteQueries(key...)
+	return b
+}
+
+// QueryValue appends a disclosure-tagged query occurrence.
+func (b *RequestBuilder) QueryValue(key string, value Value) *RequestBuilder {
+	b.metadata.addQuery(key, value)
 	return b
 }
 
@@ -340,9 +325,9 @@ func (b *RequestBuilder) QueriesStruct(queryStruct any) *RequestBuilder {
 // Headers set headers to the request.
 func (b *RequestBuilder) Headers(headers http.Header) *RequestBuilder {
 	for key, values := range headers {
-		b.headers.Del(key)
+		b.metadata.deleteHeaders(key)
 		for _, value := range values {
-			b.headers.Add(key, value)
+			b.metadata.addHeader(key, privateRequestValue(value))
 		}
 		if b.orderedHeaders != nil {
 			setOrderedHeaderValues(&b.orderedHeaders, key, values)
@@ -359,10 +344,18 @@ func (b *RequestBuilder) OrderedHeaders(headers *orderedobject.Object[[]string])
 	b.body.generatedContentType = false
 	b.orderedHeaders = cloneOrderedHeaders(headers)
 	if b.orderedHeaders == nil {
-		b.headers = &http.Header{}
+		b.metadata.headers = nil
 		return b
 	}
-	b.headers = new(headerFromOrderedHeaders(b.orderedHeaders))
+	b.metadata.headers = nil
+	for _, entry := range b.orderedHeaders.Entries() {
+		if isPseudoHeader(entry.Key) {
+			continue
+		}
+		for _, value := range entry.Value {
+			b.metadata.addHeader(entry.Key, privateRequestValue(value))
+		}
+	}
 	return b
 }
 
@@ -376,18 +369,44 @@ func (b *RequestBuilder) Header(key, value string) *RequestBuilder {
 }
 
 func (b *RequestBuilder) setHeader(key, value string) {
-	b.headers.Set(key, value)
+	b.setHeaderValue(key, privateRequestValue(value))
+}
+
+func (b *RequestBuilder) setHeaderValue(key string, value Value) {
+	b.metadata.setHeader(key, value)
 	if b.orderedHeaders != nil {
-		setOrderedHeaderValues(&b.orderedHeaders, key, []string{value})
+		setOrderedHeaderValues(&b.orderedHeaders, key, []string{value.rawValue()})
 	}
+}
+
+// HeaderValue replaces a request-local header with a disclosure-tagged value.
+func (b *RequestBuilder) HeaderValue(key string, value Value) *RequestBuilder {
+	b.setHeaderValue(key, value)
+	if strings.EqualFold(key, "Content-Type") {
+		b.body.generatedContentType = false
+	}
+	return b
 }
 
 // AddHeader adds a header to the request.
 func (b *RequestBuilder) AddHeader(key, value string) *RequestBuilder {
-	b.headers.Add(key, value)
-	if b.orderedHeaders != nil {
-		addOrderedHeaderValue(&b.orderedHeaders, key, value)
+	b.addHeaderValue(key, privateRequestValue(value))
+	if strings.EqualFold(key, "Content-Type") {
+		b.body.generatedContentType = false
 	}
+	return b
+}
+
+func (b *RequestBuilder) addHeaderValue(key string, value Value) {
+	b.metadata.addHeader(key, value)
+	if b.orderedHeaders != nil {
+		addOrderedHeaderValue(&b.orderedHeaders, key, value.rawValue())
+	}
+}
+
+// AddHeaderValue appends a disclosure-tagged value within a header name.
+func (b *RequestBuilder) AddHeaderValue(key string, value Value) *RequestBuilder {
+	b.addHeaderValue(key, value)
 	if strings.EqualFold(key, "Content-Type") {
 		b.body.generatedContentType = false
 	}
@@ -406,8 +425,8 @@ func (b *RequestBuilder) DelHeader(key ...string) *RequestBuilder {
 }
 
 func (b *RequestBuilder) delHeader(key ...string) {
+	b.metadata.deleteHeaders(key...)
 	for _, k := range key {
-		b.headers.Del(k)
 		if b.orderedHeaders != nil {
 			deleteOrderedHeader(b.orderedHeaders, k)
 		}
@@ -424,23 +443,36 @@ func (b *RequestBuilder) Cookies(cookies map[string]string) *RequestBuilder {
 
 // Cookie adds a cookie to the request.
 func (b *RequestBuilder) Cookie(key, value string) *RequestBuilder {
-	b.cookies = append(b.cookies, &http.Cookie{Name: key, Value: value}) //nolint:gosec // callers control request cookie attributes
+	b.cookieValue(key, privateRequestValue(value))
 	return b
+}
+
+// CookieValue appends a disclosure-tagged request cookie occurrence.
+func (b *RequestBuilder) CookieValue(key string, value Value) *RequestBuilder {
+	b.cookieValue(key, value)
+	return b
+}
+
+func (b *RequestBuilder) cookieValue(key string, value Value) {
+	b.metadata.addCookie(key, value)
 }
 
 // DelCookie removes one or more cookies from the request.
 func (b *RequestBuilder) DelCookie(key ...string) *RequestBuilder {
-	if b.cookies == nil || len(key) == 0 {
+	if len(key) == 0 {
 		return b
 	}
 
-	deleteKeys := stringSet(key)
-	b.cookies = slices.DeleteFunc(b.cookies, func(cookie *http.Cookie) bool {
-		_, ok := deleteKeys[cookie.Name]
-		return ok
-	})
+	b.metadata.deleteCookies(key...)
 
 	return b
+}
+
+// compatibilityHeaders exposes the detached semantic header view used by the
+// legacy body preparation helper. Disclosure state remains in metadata.
+func (b *RequestBuilder) compatibilityHeaders() *http.Header {
+	values := b.metadata.headerValues()
+	return &values
 }
 
 func stringSet(values []string) map[string]struct{} {
@@ -481,40 +513,46 @@ func (b *RequestBuilder) Auth(auth AuthMethod) *RequestBuilder {
 	return b
 }
 
-func (b *RequestBuilder) applyAuthAndHeaders(req *http.Request, snap *clientSnapshot) {
-	addHeaderValues(req.Header, snap.headers, snap.orderedHeaders)
-	for _, cookie := range snap.cookies {
-		req.AddCookie(cookie)
+func applyPlanAuthAndHeaders(
+	req *http.Request,
+	plan *requestPlan,
+	generatedContentType string,
+) *http.Request {
+	orderedHeaders := cloneOrderedHeaders(plan.orderedHeaders)
+	clientHeaders := requestOccurrencesHeaderValues(plan.clientMetadata.headers)
+	addHeaderValues(req.Header, clientHeaders, plan.clientOrderedHeaders)
+	if plan.clientAuth != nil {
+		plan.clientAuth.Apply(req)
 	}
-	clientCookies := req.Cookies()
-	if snap.auth != nil {
-		snap.auth.Apply(req)
-	}
-	var requestCookies []*http.Cookie
-	if b.headers != nil {
-		overlayHeaderValues(req.Header, *b.headers, b.orderedHeaders)
-		requestCookies = headerCookies(*b.headers)
-	}
-	requestCookies = append(requestCookies, b.cookies...)
-	applyCookiePrecedence(req, clientCookies, requestCookies)
-	if b.auth != nil {
-		b.auth.Apply(req)
-	}
-}
 
-func (b *RequestBuilder) effectiveOrderedHeaders(snap *clientSnapshot) *orderedobject.Object[[]string] {
-	headers := mergeOrderedHeaders(snap.orderedHeaders, b.orderedHeaders)
-	if headers == nil || b.headers == nil {
-		return headers
-	}
-	for key := range *b.headers {
-		if _, ok := orderedHeaderKey(b.orderedHeaders, key); ok {
-			continue
+	requestHeaders := requestOccurrencesHeaderValues(plan.requestMetadata.headers)
+	overlayHeaderValues(req.Header, requestHeaders, plan.requestOrderedHeaders)
+	if plan.body.generatedContentType && generatedContentType != "" {
+		deleteHeaderValues(req.Header, "Content-Type")
+		req.Header.Set("Content-Type", generatedContentType)
+		if plan.requestOrderedHeaders != nil {
+			setOrderedHeaderValues(&orderedHeaders, "Content-Type", []string{generatedContentType})
+		} else {
+			// A generated request-local value overrides a client ordered
+			// default without creating request-local ordered intent. Keep the
+			// detached metadata aligned with the existing precedence contract.
+			deleteOrderedHeader(orderedHeaders, "Content-Type")
 		}
-		deleteOrderedHeader(headers, key)
 	}
-	if headers.Len() == 0 {
-		return nil
+	if orderedHeaders != nil && orderedHeaders.Len() == 0 {
+		orderedHeaders = nil
 	}
-	return headers
+
+	deleteHeaderValues(req.Header, "Cookie")
+	for _, occurrence := range plan.cookies {
+		if cookie := cloneCookie(occurrence.cookie); cookie != nil {
+			req.AddCookie(cookie)
+		}
+	}
+	if plan.requestAuth != nil {
+		plan.requestAuth.Apply(req)
+	}
+
+	syncOrderedHeaderValues(orderedHeaders, req.Header)
+	return withOrderedHeaders(req, orderedHeaders)
 }

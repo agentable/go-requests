@@ -4,6 +4,24 @@
 
 Retry behavior is part of request delivery. This spec defines `RetryPolicy`, attempt counts, retry conditions, backoff strategies, `Retry-After` handling, cancellation behavior, and request body replay.
 
+## Delivery Boundary
+
+`Send` and `SendStream` are the only operations covered by this delivery
+specification. They consume a request plan through
+`compile -> delivery materialize -> delivery`, then apply the existing
+middleware, retry, redirect, proxy, cookie-jar, logger, transport, and
+response ownership rules below. `Preview` and `Prepare` do not enter this
+phase, do not run retry or middleware, and do not increment transport attempts.
+
+Moving request construction to a shared plan MUST NOT change the delivery
+semantics in this file. In particular, it does not impose middleware call
+counts, replace-body lease state machines, new cancellation guarantees for
+arbitrary readers, or a second retry/redirect model. Only the smallest cleanup
+needed before the first transport attempt is permitted: a library-owned body
+wrapper that has not yet been handed to `net/http` may be closed on delivery
+materialization failure. Encoder-returned readers, caller-provided readers, and nested
+multipart parts remain borrowed and are not dynamically closed.
+
 ## Retry Policy
 
 Retry configuration is one value:
@@ -23,7 +41,8 @@ type RetryPolicy struct {
 - `3` means up to four total attempts.
 - A negative value is invalid configuration. Client construction returns
   `ErrInvalidConfigValue`; request-local `Retry` retains the same error and
-  returns it from `Send` or `SendStream` before body preparation or dispatch.
+  returns it from `Send` or `SendStream` before delivery body materialization or
+  dispatch.
 
 Client defaults come from `WithRetry(policy)` during construction or cloning. Request-local overrides come from `RequestBuilder.Retry(policy)`. `RequestBuilder.NoRetry()` disables retries for one request.
 
@@ -101,17 +120,18 @@ Before retrying a request with a replayable body, delivery restores `req.Body` t
 
 Replayable body sources include built-in buffered/string body helpers (`JSON`, `XML`, `YAML`, `Text`, `Bytes`, `Form`, `FormField`, `FormFields`) and multipart builders that explicitly opt into `Replayable(maxBytes)`. A non-seekable `io.Reader` passed to `Reader` is non-replayable: when a retry would need to resend the body, delivery returns `ErrRequestBodyNotReplayable` instead of silently re-sending or silently skipping.
 
-Body preparation populates `GetBody` for replayable sources regardless of the
-active retry count, because 307/308 redirects consume the same standard
+Delivery materialization populates `GetBody` for replayable sources regardless
+of the active retry count, because 307/308 redirects consume the same standard
 contract. Every `GetBody` call returns a fresh body with byte-equivalent
 content. The delivery loop does not inspect concrete reader types; it only
 checks and invokes `req.GetBody`.
 
 Non-replayable streaming bodies are attempted once; if their first attempt returns a retryable response, delivery returns `ErrRequestBodyNotReplayable`.
 
-The first request body is closed by the HTTP transport. Preparation does not
-pre-close a caller-provided request reader. Nested multipart `FilePart.Body`
-values remain caller-owned and are not closed by the multipart writer.
+The first request body is closed by the HTTP transport. Delivery materialization
+does not pre-close a caller-provided request reader. Nested multipart
+`FilePart.Body` values remain caller-owned and are not closed by the multipart
+writer.
 
 ## Forbidden
 

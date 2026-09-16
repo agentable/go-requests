@@ -725,7 +725,7 @@ func TestResponseSaveRejectsUnsupportedDestination(t *testing.T) {
 
 	err := resp.Save(42)
 
-	assert.ErrorIs(t, err, ErrNotSupportSaveMethod)
+	assert.ErrorIs(t, err, ErrUnsupportedSaveType)
 }
 
 func TestResponseLines(t *testing.T) {

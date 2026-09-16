@@ -51,19 +51,163 @@ func (b *RequestBuilder) NoRetry() *RequestBuilder {
 	return b.Retry(RetryPolicy{})
 }
 
-func (b *RequestBuilder) effectiveRetryPolicy(snap *clientSnapshot) RetryPolicy {
-	policy := snap.retry
-	if b.hasRetryPolicy {
-		policy = b.retryPolicy
-	}
-	return policy.normalize()
+// deliverySnapshot is the private handoff between request compilation and
+// delivery. It contains no builder containers; all policy values are frozen
+// before body materialization begins.
+type deliverySnapshot struct {
+	plan                 *requestPlan
+	client               clientSnapshot
+	middlewares          []Middleware
+	retryPolicy          RetryPolicy
+	timeout              time.Duration
+	maxResponseBodyBytes int64
 }
 
-func (b *RequestBuilder) do(ctx context.Context, req *http.Request, snap *clientSnapshot) (*http.Response, int, error) {
+type openedDelivery struct {
+	request              *http.Request
+	client               clientSnapshot
+	middlewares          []Middleware
+	retryPolicy          RetryPolicy
+	maxResponseBodyBytes int64
+	cancel               context.CancelFunc
+	start                time.Time
+}
+
+func (b *RequestBuilder) compileDeliverySnapshot() (*deliverySnapshot, error) {
+	if b == nil || b.client == nil {
+		return nil, fmt.Errorf("%w: request delivery", ErrInvalidConfigValue)
+	}
+	if b.preparationErr != nil {
+		return nil, b.preparationErr
+	}
+
+	snap := b.client.snapshot()
+	plan, err := b.compileRequestPlanSnapshot(snap)
+	if err != nil {
+		var creation *requestPlanCreationError
+		if errors.As(err, &creation) {
+			if snap.logger != nil {
+				snap.logger.Errorf("Error creating request: %v", sanitizeURLDiagnosticError(creation.cause))
+			}
+			return nil, fmt.Errorf("%w: %w", ErrRequestCreationFailed, sanitizeURLDiagnosticError(creation.cause))
+		}
+		if snap.logger != nil {
+			snap.logger.Errorf("Error preparing request plan: %v", err)
+		}
+		return nil, err
+	}
+	if err := validateDeliveryPreflightFacts(plan.body, plan.bodyPreflightHeaders()); err != nil {
+		if snap.logger != nil {
+			snap.logger.Errorf("Error preparing request body: %v", err)
+		}
+		return nil, err
+	}
+	if plan.body.form != nil {
+		plan.body.form = plan.body.form.Clone()
+	}
+
+	retryPolicy := snap.retry
+	if b.hasRetryPolicy {
+		retryPolicy = b.retryPolicy
+	}
+	return &deliverySnapshot{
+		plan:                 plan,
+		client:               snap,
+		middlewares:          slices.Clone(b.middlewares),
+		retryPolicy:          retryPolicy.normalize(),
+		timeout:              b.timeout,
+		maxResponseBodyBytes: b.maxResponseBodyBytes,
+	}, nil
+}
+
+// validateDeliveryPreflightFacts keeps delivery's historical error boundary.
+// Multipart part metadata is consumed by the producer during materialization;
+// only checks that the reader constructor itself performs synchronously belong
+// before openDelivery.
+func validateDeliveryPreflightFacts(body requestBodyPlan, headers http.Header) error { //nolint:gocritic // Validation consumes a detached plan snapshot without mutation.
+	if body.kind != requestBodyMultipart {
+		return validateDeliveryStaticFacts(body, headers)
+	}
+	if body.multipart == nil {
+		return previewInvalidBodyError()
+	}
+	if body.multipart.canReplay && body.multipart.replayMaxBytes < 0 {
+		return previewInvalidBodyError()
+	}
+	if body.multipart.boundary != "" && !validMultipartBoundary(body.multipart.boundary) {
+		return previewInvalidBodyError()
+	}
+	return nil
+}
+
+func prepareDeliveryContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); !ok && timeout > 0 {
+		return context.WithTimeout(ctx, timeout)
+	}
+	return ctx, nil
+}
+
+func (s *deliverySnapshot) openDelivery(ctx context.Context) (*openedDelivery, error) {
+	if s == nil || s.plan == nil {
+		return nil, fmt.Errorf("%w: delivery snapshot", ErrInvalidConfigValue)
+	}
+	start := time.Now()
+	if _, err := http.NewRequestWithContext(ctx, s.plan.method, s.plan.targetURL.String(), nil); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrRequestCreationFailed, sanitizeURLDiagnosticError(err))
+	}
+
+	deliveryContext, cancel := prepareDeliveryContext(ctx, s.timeout)
+	cancelOnError := func() {
+		if cancel != nil {
+			cancel()
+		}
+	}
+	preparedBody, err := prepareBodyFromPlan(
+		s.plan.body,
+		s.plan.bodyPreflightHeaders(),
+		&s.client,
+	)
+	if err != nil {
+		cancelOnError()
+		if s.client.logger != nil {
+			s.client.logger.Errorf("Error preparing request body: %v", err)
+		}
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(deliveryContext, s.plan.method, s.plan.targetURL.String(), preparedBody.body)
+	if err != nil {
+		cancelOnError()
+		if s.client.logger != nil {
+			s.client.logger.Errorf("Error creating request: %v", sanitizeURLDiagnosticError(err))
+		}
+		return nil, fmt.Errorf("%w: %w", ErrRequestCreationFailed, sanitizeURLDiagnosticError(err))
+	}
+	if preparedBody.getBody != nil {
+		req.GetBody = preparedBody.getBody
+		req.ContentLength = preparedBody.contentLength
+	}
+	req = applyPlanAuthAndHeaders(req, s.plan, preparedBody.contentType)
+
+	return &openedDelivery{
+		request:              req,
+		client:               s.client,
+		middlewares:          slices.Clone(s.middlewares),
+		retryPolicy:          s.retryPolicy,
+		maxResponseBodyBytes: s.maxResponseBodyBytes,
+		cancel:               cancel,
+		start:                start,
+	}, nil
+}
+
+func (d *openedDelivery) do() (*http.Response, int, error) {
 	attempts := 0
+	req := d.request
+	snap := &d.client
+	ctx := req.Context()
 
 	finalHandler := MiddlewareHandlerFunc(func(req *http.Request) (*http.Response, error) {
-		retry := b.effectiveRetryPolicy(snap)
+		retry := d.retryPolicy
 
 		var errs []error
 		var resp *http.Response
@@ -133,7 +277,7 @@ func (b *RequestBuilder) do(ctx context.Context, req *http.Request, snap *client
 		return resp, nil
 	})
 
-	for _, mw := range slices.Backward(b.middlewares) {
+	for _, mw := range slices.Backward(d.middlewares) {
 		finalHandler = mw(finalHandler)
 	}
 	for _, mw := range slices.Backward(snap.middlewares) {
@@ -176,18 +320,25 @@ func drainAndCloseBody(body io.ReadCloser) error {
 // resend the body return [ErrRequestBodyNotReplayable] instead of silently
 // re-sending or silently skipping.
 func (b *RequestBuilder) Send(ctx context.Context) (*Response, error) {
-	req, snap, cancel, start, err := b.prepareRequest(ctx)
+	if ctx == nil {
+		return nil, ErrRequestCreationFailed
+	}
+	snapshot, err := b.compileDeliverySnapshot()
 	if err != nil {
 		return nil, err
 	}
-	if cancel != nil {
-		defer cancel()
+	opened, err := snapshot.openDelivery(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if opened.cancel != nil {
+		defer opened.cancel()
 	}
 
-	resp, attempts, err := b.do(req.Context(), req, &snap)
+	resp, attempts, err := opened.do()
 	if err != nil {
-		if snap.logger != nil {
-			snap.logger.Errorf("Error executing request: %v", err)
+		if opened.client.logger != nil {
+			opened.client.logger.Errorf("Error executing request: %v", err)
 		}
 		if resp != nil {
 			_ = resp.Body.Close()
@@ -196,15 +347,15 @@ func (b *RequestBuilder) Send(ctx context.Context) (*Response, error) {
 	}
 
 	if resp == nil {
-		if snap.logger != nil {
-			snap.logger.Errorf("Response is nil")
+		if opened.client.logger != nil {
+			opened.client.logger.Errorf("Response is nil")
 		}
 		return nil, ErrResponseNil
 	}
 
-	response, err := newResponse(resp, &snap, b.maxResponseBodyBytes)
+	response, err := newResponse(resp, &opened.client, opened.maxResponseBodyBytes)
 	if response != nil {
-		response.elapsed = time.Since(start)
+		response.elapsed = time.Since(opened.start)
 		response.attempts = attempts
 	}
 	return response, err
@@ -213,18 +364,25 @@ func (b *RequestBuilder) Send(ctx context.Context) (*Response, error) {
 // SendStream sends the request and returns an unbuffered streaming response.
 // Invalid fluent preparation input is returned before any body or transport work.
 func (b *RequestBuilder) SendStream(ctx context.Context) (*StreamResponse, error) {
-	req, snap, cancel, start, err := b.prepareRequest(ctx)
+	if ctx == nil {
+		return nil, ErrRequestCreationFailed
+	}
+	snapshot, err := b.compileDeliverySnapshot()
+	if err != nil {
+		return nil, err
+	}
+	opened, err := snapshot.openDelivery(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, attempts, err := b.do(req.Context(), req, &snap)
+	resp, attempts, err := opened.do()
 	if err != nil {
-		if cancel != nil {
-			cancel()
+		if opened.cancel != nil {
+			opened.cancel()
 		}
-		if snap.logger != nil {
-			snap.logger.Errorf("Error executing request: %v", err)
+		if opened.client.logger != nil {
+			opened.client.logger.Errorf("Error executing request: %v", err)
 		}
 		if resp != nil {
 			_ = resp.Body.Close()
@@ -233,86 +391,19 @@ func (b *RequestBuilder) SendStream(ctx context.Context) (*StreamResponse, error
 	}
 
 	if resp == nil {
-		if cancel != nil {
-			cancel()
+		if opened.cancel != nil {
+			opened.cancel()
 		}
-		if snap.logger != nil {
-			snap.logger.Errorf("Response is nil")
+		if opened.client.logger != nil {
+			opened.client.logger.Errorf("Response is nil")
 		}
 		return nil, ErrResponseNil
 	}
 
-	response := newStreamResponse(resp, cancel)
-	response.elapsed = time.Since(start)
+	response := newStreamResponse(resp, opened.cancel)
+	response.elapsed = time.Since(opened.start)
 	response.attempts = attempts
 	return response, nil
-}
-
-func (b *RequestBuilder) prepareRequest(ctx context.Context) (*http.Request, clientSnapshot, context.CancelFunc, time.Time, error) {
-	start := time.Now()
-	if b.preparationErr != nil {
-		return nil, clientSnapshot{}, nil, start, b.preparationErr
-	}
-	snap := b.client.snapshot()
-	var cancel context.CancelFunc
-	cancelOnError := func() {
-		if cancel != nil {
-			cancel()
-		}
-	}
-
-	parsedURL, err := resolveRequestURL(snap.baseURL, b.preparePath(), b.queries)
-	if err != nil {
-		err = sanitizeURLDiagnosticError(err)
-		if snap.logger != nil {
-			snap.logger.Errorf("Error parsing URL: %v", err)
-		}
-		return nil, snap, nil, start, fmt.Errorf("%w: %w", ErrRequestCreationFailed, err)
-	}
-
-	if _, err := http.NewRequestWithContext(ctx, b.method, parsedURL.String(), nil); err != nil {
-		err = sanitizeURLDiagnosticError(err)
-		if snap.logger != nil {
-			snap.logger.Errorf("Error creating request: %v", err)
-		}
-		return nil, snap, nil, start, fmt.Errorf("%w: %w", ErrRequestCreationFailed, err)
-	}
-
-	ctx, cancel = b.prepareContext(ctx)
-
-	preparedBody, err := b.prepareBody(&snap)
-	if err != nil {
-		cancelOnError()
-		if snap.logger != nil {
-			snap.logger.Errorf("Error preparing request body: %v", err)
-		}
-		return nil, snap, nil, start, err
-	}
-
-	if preparedBody.contentType != "" {
-		b.setHeader("Content-Type", preparedBody.contentType)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, b.method, parsedURL.String(), preparedBody.body)
-	if err != nil {
-		err = sanitizeURLDiagnosticError(err)
-		cancelOnError()
-		if snap.logger != nil {
-			snap.logger.Errorf("Error creating request: %v", err)
-		}
-		return nil, snap, nil, start, fmt.Errorf("%w: %w", ErrRequestCreationFailed, err)
-	}
-	if preparedBody.getBody != nil {
-		req.GetBody = preparedBody.getBody
-		req.ContentLength = preparedBody.contentLength
-	}
-
-	b.applyAuthAndHeaders(req, &snap)
-	orderedHeaders := b.effectiveOrderedHeaders(&snap)
-	syncOrderedHeaderValues(orderedHeaders, req.Header)
-	req = withOrderedHeaders(req, orderedHeaders)
-
-	return req, snap, cancel, start, nil
 }
 
 func canReplayRequestBody(req *http.Request) bool {
@@ -332,11 +423,4 @@ func resetRequestBody(req *http.Request) error {
 	}
 	req.Body = body
 	return nil
-}
-
-func (b *RequestBuilder) prepareContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	if _, ok := ctx.Deadline(); !ok && b.timeout > 0 {
-		return context.WithTimeout(ctx, b.timeout)
-	}
-	return ctx, nil
 }

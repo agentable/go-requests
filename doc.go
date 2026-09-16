@@ -1,9 +1,9 @@
 // Package requests provides a fluent HTTP client library for Go.
 //
-// # Core delivery model
+// # Core request model
 //
-// The package is built around four delivery objects and one detached value
-// projection:
+// The package is built around four core objects and two detached request
+// projections:
 //
 //   - Client owns reusable configuration: base URL, default headers and cookies,
 //     auth, retry policy, codecs, logger, and transport settings.
@@ -11,13 +11,18 @@
 //     metadata, body, timeout, retries, buffered response limit, and middleware.
 //   - RequestPreview is a detached, policy-filtered projection returned before
 //     delivery; it is not a prepared or sendable request.
+//   - RequestPreparation is a detached, retained-byte-limited projection for
+//     selected inspection before delivery; it is sanitized and not sendable.
 //   - Response exposes the buffered result of one Send call.
 //   - StreamResponse exposes the unbuffered result of one SendStream call.
 //
 // Client defaults are formed during New or Clone. State that is reused across
 // requests belongs on Client; state for one request belongs on RequestBuilder.
 // Preview does not consume request inputs, invoke delivery collaborators, or
-// freeze the builder; callers can still send the builder independently.
+// freeze the builder; callers can still send the builder independently. Prepare
+// follows the same no-delivery boundary. It may retain explicitly approved,
+// eligible body data in PreparedBody.Data under MaxPreparedBodyBytes; metadata
+// is projected separately under the preparation disclosure policy.
 //
 // # Quick start
 //
@@ -61,6 +66,17 @@
 //     [ErrRequestBodyNotReplayable] instead of silently re-sending or silently
 //     skipping the retry. Use [Multipart.Replayable] when a multipart body must
 //     be resent.
+//
+// Legacy body setters keep their values private in [RequestBuilder.Prepare].
+// [RequestBuilder.TextValue] and [RequestBuilder.BytesPayload] can retain
+// explicitly approved in-memory data through [Public] and [PublicPayload],
+// subject to [PrepareOptions.MaxPreparedBodyBytes]. A form is retained only
+// when all of its occurrences are explicitly public. Typed JSON, XML, and YAML
+// bodies remain structural and are never encoded by Prepare. Opaque readers
+// and multipart parts remain borrowed: Prepare does not read or close them.
+// Multipart preparation returns only a structural manifest and redacted body
+// data. [RequestPreparation] is detached and cannot be sent or converted into
+// an [http.Request].
 //
 // # Errors
 //

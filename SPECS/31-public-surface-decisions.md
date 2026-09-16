@@ -148,6 +148,83 @@ prepared or replayable body, middleware output, or delivery status.
   request serialization. Downstream full dry-run assembly remains outside this
   root package's contract.
 
+### Capability-Aware Disclosure and Request Preparation
+
+`RequestBuilder.Prepare(ctx, PrepareOptions)` is the one root-package no-send
+operation that may inspect library-owned body data under a retained-byte limit
+(zero is valid and retains no body bytes).
+It returns a detached `RequestPreparation` projection. It does not call unknown
+auth implementations, encoders, consume opaque readers, or open
+borrowed multipart parts. Multipart is represented only by a structural manifest
+with redacted body data; its first version exposes field names, value multiplicity,
+and file-field order, not filename or part content type. It does not return an `http.Request`, raw URL, reader, `GetBody`,
+replay handle, cleanup handle, or any other send capability.
+
+The package keeps the ordinary fluent language small: existing string,
+`http.Header`, `url.Values`, map, and typed-body inputs remain valid and enter
+the preparation graph as private data. The first capability surface is only
+`Public`, `PublicPayload`, `PathValue`, `PathParamValue`, `QueryValue`, `HeaderValue`,
+`AddHeaderValue`, `CookieValue`, `FormFieldValue`, `TextValue`, and
+`BytesPayload`, with signatures fixed by
+`SPECS/21-request-builder-api-specs.md`.
+No `Private*` constructor, typed-body owner API, base URL disclosure option,
+absolute-target constructor, alternate `*Value`/`*Payload` name, `Reveal`, or
+caller-controlled disclosure name is part of the contract. There is no
+`Prepare` reveal flag or caller-controlled disclosure switch.
+
+Disclosure is attached to each value occurrence, not stored in a parallel
+sensitivity map. Zero values are private/redacted, and public empty values
+remain distinguishable from redacted values. Capability wrappers have no raw
+accessor, `Reveal`, general formatter, or serializer. Path disclosure is
+whole-value: scheme and authority are the narrow structural exceptions, while
+the library never guesses a safe pathname, query, fragment, or userinfo substring
+by splitting a private raw URL. Typed bodies remain structural in
+Prepare; callers provide already encoded owned bytes when they explicitly need
+body data. Capability wrappers do not provide a value-revealing formatter or
+serializer; their default formatting is a fixed safe marker. HTTP method,
+metadata names, and the closed set of library-generated base media types are
+structural schema for Prepare; caller-supplied media types remain data and are
+never projected by Prepare. Structural Preview keeps its existing semantic
+`Content-Type` accessor as defined in
+`SPECS/21-request-builder-api-specs.md`. Callers must not put secrets in
+structural names. `Public` is an input disclosure declaration, not a permission
+boundary or a proof of trusted provenance; it cannot upgrade a legacy private
+value already stored in a builder. `PathParamValue` is the owner-aware sibling of
+`PathParam`: it replaces one named parameter entry and authorizes that value only
+for the resolved pathname. `PathParam` and `PathParams` remain private, and
+`DelPathParam` removes either kind of entry. The outer path still requires
+`PathValue(Public(...))`; a public parameter cannot relabel a private outer path
+or a private base pathname. Only an actually replaced pathname placeholder
+participates in pathname taint; unmatched, query-only, and fragment-only
+occurrences do not. Existing `url.PathEscape`/`EscapedPath` resolution remains
+authoritative, and scheme/authority/query-name private substitutions continue to
+fail closed.
+
+`Authorization` and `Proxy-Authorization` are credential headers. Their values
+remain private even when passed through an owner-marked header setter; a compound
+`Cookie` header is likewise private and is never decomposed into public cookie
+occurrences.
+
+`GetBaseURL`, `WithBaseURL`, absolute URL resolution, and all existing verb
+helpers remain unchanged. Base URL pathname, query, and userinfo data remain
+private in Prepare when configured through legacy `WithBaseURL`; base URL
+fragments are rejected during construction and never enter Prepare. The existing
+getter is an explicit configuration escape hatch and is outside the preparation
+projection.
+
+- **Why**: A structural preview and a retained-byte-limited preparation projection answer
+  different questions. A small capability surface keeps disclosure attached to
+  the owner decision while preserving the fluent API for ordinary callers.
+- **Rejected**: deleting `Preview`, making every public argument a `Value`,
+  exposing raw/prepared/sendable requests, inferring safe URL substrings, or
+  making safety depend on a preparation-time switch.
+- **Contract Impact**: `Preview`, `Prepare`, and delivery compile the same
+  private request facts but have separate collaborator and ownership
+  boundaries. `Prepare` has zero root-library middleware, retry, redirect, jar,
+  proxy, logger, transport, or response activity for the explicitly tested
+  success/failure matrix; this is not a claim about arbitrary unknown external
+  collaborators.
+
 ### Retry Policy As One Value
 
 Retry behavior is configured through `RetryPolicy` at the client layer with

@@ -47,12 +47,6 @@ func orderedHeaderKey(headers *orderedobject.Object[[]string], key string) (stri
 	return "", false
 }
 
-func headerFromOrderedHeaders(headers *orderedobject.Object[[]string]) http.Header {
-	dst := http.Header{}
-	addOrderedHeaders(dst, headers)
-	return dst
-}
-
 func addOrderedHeaders(dst http.Header, headers *orderedobject.Object[[]string]) {
 	if headers == nil {
 		return

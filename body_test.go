@@ -402,3 +402,110 @@ func TestBuiltInBodyGetBodyReturnsFreshReaders(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode())
 }
+func TestBodySourceFacts(t *testing.T) {
+	client := newTestClient(t)
+
+	legacyText := client.Post("/").Text("private text")
+	assert.False(t, legacyText.body.valuePublic)
+
+	ownerText := client.Post("/").TextValue(Public("approved text"))
+	assert.True(t, ownerText.body.valuePublic)
+	assert.Equal(t, "approved text", ownerText.body.value)
+
+	legacyBytes := client.Post("/").Bytes([]byte("private bytes"))
+	assert.False(t, legacyBytes.body.valuePublic)
+
+	ownerBytes := client.Post("/").BytesPayload(PublicPayload([]byte("approved bytes")))
+	assert.True(t, ownerBytes.body.valuePublic)
+	assert.Equal(t, []byte("approved bytes"), ownerBytes.body.value)
+
+	legacyForm := client.Post("/").FormField("private", "value")
+	assert.False(t, legacyForm.body.formAllPublic())
+
+	ownerForm := client.Post("/").FormFieldValue("approved", Public("value"))
+	assert.True(t, ownerForm.body.formAllPublic())
+	assert.Equal(t, []requestBodyFormOccurrence{{name: "approved", value: Public("value")}}, ownerForm.body.formOccurrences)
+
+	ownerForm.FormField("private", "value")
+	assert.False(t, ownerForm.body.formAllPublic())
+	ownerForm.DelFormField("private")
+	assert.True(t, ownerForm.body.formAllPublic())
+
+	typed := client.Post("/").JSON(struct{ Secret string }{Secret: "value"})
+	assert.False(t, typed.body.valuePublic)
+}
+
+func TestBodySourceOwnership(t *testing.T) {
+	client := newTestClient(t)
+
+	data := []byte("approved")
+	builder := client.Post("/").BytesPayload(PublicPayload(data))
+	data[0] = 'x'
+	assert.Equal(t, []byte("approved"), builder.body.value)
+
+	builder.Text("private")
+	assert.False(t, builder.body.valuePublic)
+	builder.BytesPayload(PublicPayload([]byte("approved again")))
+	builder.JSON(struct{ Secret string }{Secret: "private again"})
+	assert.False(t, builder.body.valuePublic)
+
+	source := &bodySourceTrackingReader{}
+	client.Post("/").Reader(source, "application/octet-stream")
+	assert.Zero(t, source.reads.Load())
+	assert.Zero(t, source.closes.Load())
+}
+
+func TestPreparedMultipartManifestPreservesStructureWithoutReadingParts(t *testing.T) {
+	source := &bodySourceTrackingReader{}
+	body := NewMultipart().
+		Field("z", "last").
+		Field("a", "first").
+		Field("a", "second").
+		Boundary("requests-boundary").
+		Part(FilePart{Field: "upload-first", Filename: "private-name-1.txt", ContentType: "private/type-1", Body: source}).
+		Part(FilePart{Field: "upload-second", Filename: "private-name-2.txt", ContentType: "private/type-2", Body: source})
+
+	preparation, err := newTestClient(t).Post("/").Multipart(body).Prepare(t.Context(), PrepareOptions{})
+	require.NoError(t, err)
+	manifest := preparation.Body().Multipart()
+	require.NotNil(t, manifest)
+	fields := manifest.Fields()
+	require.Len(t, fields, 2)
+	assert.Equal(t, "a", fields[0].Name())
+	assert.Len(t, fields[0].Values(), 2)
+	assert.Equal(t, PreparedValueRedacted, fields[0].Values()[0].State())
+	assert.Equal(t, "z", fields[1].Name())
+	files := manifest.Files()
+	require.Len(t, files, 2)
+	assert.Equal(t, "upload-first", files[0].Field())
+	assert.Equal(t, "upload-second", files[1].Field())
+	assert.Zero(t, source.reads.Load())
+	assert.Zero(t, source.closes.Load())
+}
+
+func TestPrepareRejectsOverlongMultipartBoundaryWithoutReadingParts(t *testing.T) {
+	source := &bodySourceTrackingReader{}
+	body := NewMultipart().
+		Boundary(string(bytes.Repeat([]byte{'x'}, 71))).
+		Part(FilePart{Field: "upload", Filename: "payload.txt", Body: source})
+
+	_, err := newTestClient(t).Post("/").Multipart(body).Prepare(t.Context(), PrepareOptions{})
+	assert.ErrorIs(t, err, ErrInvalidConfigValue)
+	assert.Zero(t, source.reads.Load())
+	assert.Zero(t, source.closes.Load())
+}
+
+type bodySourceTrackingReader struct {
+	reads  atomic.Int64
+	closes atomic.Int64
+}
+
+func (r *bodySourceTrackingReader) Read([]byte) (int, error) {
+	r.reads.Add(1)
+	return 0, io.EOF
+}
+
+func (r *bodySourceTrackingReader) Close() error {
+	r.closes.Add(1)
+	return nil
+}

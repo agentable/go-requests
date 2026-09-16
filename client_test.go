@@ -21,88 +21,6 @@ import (
 	"github.com/test-go/testify/require"
 )
 
-// startTestHTTPServer starts a test HTTP server that responds to various endpoints for testing purposes.
-func startTestHTTPServer() *httptest.Server {
-	handler := http.NewServeMux()
-	handler.HandleFunc("/test-get", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprintln(w, "GET response")
-	})
-
-	handler.HandleFunc("/test-post", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprintln(w, "POST response")
-	})
-
-	handler.HandleFunc("/test-put", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprintln(w, "PUT response")
-	})
-
-	handler.HandleFunc("/test-delete", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprintln(w, "DELETE response")
-	})
-
-	handler.HandleFunc("/test-patch", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprintln(w, "PATCH response")
-	})
-
-	handler.HandleFunc("/test-status-code", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusCreated) // 201
-		_, _ = fmt.Fprintln(w, `Created`)
-	})
-
-	handler.HandleFunc("/test-headers", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Custom-Header", "TestValue")
-		_, _ = fmt.Fprintln(w, `Headers test`)
-	})
-
-	handler.HandleFunc("/test-cookies", func(w http.ResponseWriter, r *http.Request) {
-		http.SetCookie(w, &http.Cookie{Name: "test-cookie", Value: "cookie-value"})
-		_, _ = fmt.Fprintln(w, `Cookies test`)
-	})
-
-	handler.HandleFunc("/test-body", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprintln(w, "This is the response body.")
-	})
-
-	handler.HandleFunc("/test-empty", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK) // Send a 200 OK status
-		// Don't write any body to ensure it's empty
-	})
-
-	handler.HandleFunc("/test-json", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintln(w, `{"message": "This is a JSON response", "status": true}`)
-	})
-
-	handler.HandleFunc("/test-xml", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/xml")
-		_, _ = fmt.Fprintln(w, `<Response><Message>This is an XML response</Message><Status>true</Status></Response>`)
-	})
-
-	handler.HandleFunc("/test-text", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		_, _ = fmt.Fprintln(w, `This is a text response`)
-	})
-
-	handler.HandleFunc("/test-pdf", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/pdf")
-		_, _ = fmt.Fprintln(w, `This is a PDF response`)
-	})
-
-	handler.HandleFunc("/test-redirect", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/test-redirected", http.StatusFound)
-	})
-
-	handler.HandleFunc("/test-redirected", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprintln(w, "Redirected")
-	})
-
-	handler.HandleFunc("/test-failure", func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-	})
-
-	return httptest.NewServer(handler)
-}
-
 func TestClientURL(t *testing.T) {
 	client := newTestClient(t, WithBaseURL("http://localhost:8080"))
 	assert.NotNil(t, client)
@@ -663,11 +581,13 @@ func TestGettersAndSnapshot(t *testing.T) {
 
 	snap := client.snapshot()
 	assert.Equal(t, "https://example.com", snap.baseURL)
-	assert.Equal(t, "1", snap.headers.Get("X-Test"))
-	assert.Len(t, snap.cookies, 1)
+	assert.Equal(t, "1", snap.metadata.headerValues().Get("X-Test"))
+	assert.Len(t, snap.metadata.cookies, 1)
 
-	snap.cookies[0].Value = "changed"
-	assert.Equal(t, "abc", client.cookies[0].Value)
+	snap.metadata.headers[0].value = Public("changed")
+	snap.metadata.cookies[0].cookie.Value = "changed"
+	assert.Equal(t, "1", client.metadata.headerValues().Get("X-Test"))
+	assert.Equal(t, "abc", client.metadata.cookies[0].cookie.Value)
 }
 
 func TestClientUsesExampleHostWithTLSServer(t *testing.T) {
@@ -832,41 +752,41 @@ func TestErrorIntrospection(t *testing.T) {
 	})
 }
 
-func TestHttp2Scenarios(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping HTTP/2 external network tests in short mode")
-	}
+func TestHTTPProtocolScenarios(t *testing.T) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
 
 	tests := []struct {
 		name            string
 		options         []Option
 		url             string
 		expectedVersion string
-		skipOnNetError  bool // Skip test if network error occurs (for external services)
 	}{
 		{
-			name:            "Default HTTP version, request to use http2 version URL",
-			url:             "https://tools.scrapfly.io/api/fp/anything",
+			name:            "default transport negotiates HTTP/2",
+			options:         []Option{WithHTTPClient(server.Client())},
+			url:             server.URL,
 			expectedVersion: "HTTP/2.0",
-			skipOnNetError:  true,
 		},
 		{
-			name:            "Explicit HTTP/2, request to use http2 version URL",
-			options:         []Option{WithHTTP2()},
-			url:             "https://tools.scrapfly.io/api/fp/anything",
+			name:            "explicit HTTP/2 enables negotiation",
+			options:         []Option{WithHTTPClient(server.Client()), WithHTTP2()},
+			url:             server.URL,
 			expectedVersion: "HTTP/2.0",
-			skipOnNetError:  true,
 		},
 		{
-			name: "Set Transport, request to use http1.1 version URL",
+			name: "custom transport keeps HTTP/1.1",
 			options: []Option{WithTransport(&http.Transport{
 				TLSClientConfig: &tls.Config{
 					InsecureSkipVerify: true,
 				},
 			})},
-			url:             "https://www.baidu.com",
+			url:             server.URL,
 			expectedVersion: "HTTP/1.1",
-			skipOnNetError:  true,
 		},
 	}
 
@@ -874,14 +794,8 @@ func TestHttp2Scenarios(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			client := newTestClient(t, tt.options...)
 
-			resp, err := client.Get(tt.url).Send(context.Background())
-			if err != nil {
-				if tt.skipOnNetError {
-					t.Skipf("Skipping due to network error: %v", err)
-				}
-				t.Fatalf("Unexpected error: %v", err)
-				return
-			}
+			resp, err := client.Get(tt.url).Send(t.Context())
+			require.NoError(t, err)
 			assert.Equal(t, tt.expectedVersion, resp.Raw().Proto, "Protocol version mismatch")
 		})
 	}

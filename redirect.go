@@ -43,25 +43,25 @@ func (p *ProhibitRedirectPolicy) Apply(_ *http.Request, _ []*http.Request) error
 
 // AllowRedirectPolicy is a redirect policy that allows a flexible number of redirects.
 type AllowRedirectPolicy struct {
-	numberRedirects int
+	maxRedirects int
 }
 
-// NewAllowRedirectPolicy creates a new AllowRedirectPolicy that allows up to the specified number of redirects.
-func NewAllowRedirectPolicy(numberRedirects int) *AllowRedirectPolicy {
-	return &AllowRedirectPolicy{numberRedirects: numberRedirects}
+// NewAllowRedirectPolicy creates a new AllowRedirectPolicy that allows up to the specified maximum number of redirects.
+func NewAllowRedirectPolicy(maxRedirects int) *AllowRedirectPolicy {
+	return &AllowRedirectPolicy{maxRedirects: maxRedirects}
 }
 
 // Apply allows redirects up to the configured limit, returning ErrTooManyRedirects if exceeded.
 func (a *AllowRedirectPolicy) Apply(req *http.Request, via []*http.Request) error {
-	if len(via) >= a.numberRedirects {
-		return fmt.Errorf("stopped after %d redirects: %w", a.numberRedirects, ErrTooManyRedirects)
+	if len(via) >= a.maxRedirects {
+		return fmt.Errorf("stopped after %d redirects: %w", a.maxRedirects, ErrTooManyRedirects)
 	}
 	stripSensitiveHeadersOnRedirect(req, via[0])
 	return nil
 }
 
-// getHostname extracts the hostname from a host string, removing any port number.
-func getHostname(host string) string {
+// hostname extracts the hostname from a host string, removing any port number.
+func hostname(host string) string {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
@@ -84,7 +84,7 @@ func NewRedirectSpecifiedDomainPolicy(domains ...string) *RedirectSpecifiedDomai
 
 // Apply checks if the redirect target domain is in the allowed domains list.
 func (s *RedirectSpecifiedDomainPolicy) Apply(req *http.Request, _ []*http.Request) error {
-	if !s.allowedHosts[getHostname(req.URL.Host)] {
+	if !s.allowedHosts[hostname(req.URL.Host)] {
 		return ErrRedirectNotAllowed
 	}
 	return nil

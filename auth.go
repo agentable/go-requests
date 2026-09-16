@@ -1,6 +1,9 @@
 package requests
 
-import "net/http"
+import (
+	"fmt"
+	"net/http"
+)
 
 // AuthMethod defines the interface for applying authentication strategies to requests.
 type AuthMethod interface {
@@ -8,6 +11,69 @@ type AuthMethod interface {
 	Apply(req *http.Request)
 	// Valid reports whether the authentication strategy is configured.
 	Valid() bool
+}
+
+type authShapeKind uint8
+
+const (
+	builtInAuthUnknown authShapeKind = iota
+	builtInAuthBasic
+	builtInAuthBearer
+	builtInAuthCustom
+)
+
+// authShape is the non-materializing identity of a built-in auth method. It
+// deliberately contains no credential data and never calls AuthMethod methods.
+type authShape struct {
+	kind authShapeKind
+}
+
+// builtInAuthShape recognizes built-in authentication by concrete shape. The
+// second result distinguishes an unknown caller-defined implementation from a
+// recognized built-in method. Invalid built-in fields are reported without
+// invoking Valid or Apply.
+func builtInAuthShape(auth AuthMethod) (authShape, bool, error) {
+	if auth == nil {
+		return authShape{}, false, nil
+	}
+	if isNilInterface(auth) {
+		return authShape{}, true, fmt.Errorf("%w: auth", ErrInvalidConfigValue)
+	}
+
+	switch value := auth.(type) {
+	case BasicAuth:
+		if value.Username == "" || value.Password == "" {
+			return authShape{}, true, fmt.Errorf("%w: auth", ErrInvalidConfigValue)
+		}
+		return authShape{kind: builtInAuthBasic}, true, nil
+	case *BasicAuth:
+		if value.Username == "" || value.Password == "" {
+			return authShape{}, true, fmt.Errorf("%w: auth", ErrInvalidConfigValue)
+		}
+		return authShape{kind: builtInAuthBasic}, true, nil
+	case BearerAuth:
+		if value.Token == "" {
+			return authShape{}, true, fmt.Errorf("%w: auth", ErrInvalidConfigValue)
+		}
+		return authShape{kind: builtInAuthBearer}, true, nil
+	case *BearerAuth:
+		if value.Token == "" {
+			return authShape{}, true, fmt.Errorf("%w: auth", ErrInvalidConfigValue)
+		}
+		return authShape{kind: builtInAuthBearer}, true, nil
+	case CustomAuth:
+		if value.Header == "" {
+			return authShape{}, true, fmt.Errorf("%w: auth", ErrInvalidConfigValue)
+		}
+		return authShape{kind: builtInAuthCustom}, true, nil
+	case *CustomAuth:
+		if value.Header == "" {
+			return authShape{}, true, fmt.Errorf("%w: auth", ErrInvalidConfigValue)
+		}
+		return authShape{kind: builtInAuthCustom}, true, nil
+	default:
+		return authShape{}, false, nil
+	}
 }
 
 // BasicAuth represents HTTP Basic Authentication credentials.

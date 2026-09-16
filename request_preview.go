@@ -2,6 +2,7 @@ package requests
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -430,23 +431,15 @@ func (b *RequestBuilder) Preview(ctx context.Context) (*RequestPreview, error) {
 		return nil, err
 	}
 
-	parsedURL, err := resolveRequestURL(snap.baseURL, b.preparePath(), b.queries)
+	plan, err := b.compileRequestPlanSnapshot(snap)
 	if err != nil {
-		return nil, ErrRequestCreationFailed
-	}
-	request, err := http.NewRequestWithContext(previewCtx, b.method, parsedURL.String(), nil)
-	if err != nil {
-		return nil, ErrRequestCreationFailed
-	}
-	if err := previewCtx.Err(); err != nil {
+		var creation *requestPlanCreationError
+		if errors.As(err, &creation) {
+			return nil, ErrRequestCreationFailed
+		}
 		return nil, err
 	}
-
-	preview, err := newURLRequestPreview(previewCtx, request, parsedURL, b, &snap)
-	if err != nil {
-		return nil, err
-	}
-	return preview, nil
+	return plan.projectStructural(previewCtx)
 }
 
 type previewPreparationError struct {
@@ -483,67 +476,6 @@ func previewContext(ctx context.Context, timeout time.Duration) (context.Context
 	return ctx, nil
 }
 
-func newURLRequestPreview(
-	ctx context.Context,
-	request *http.Request,
-	parsedURL *url.URL,
-	b *RequestBuilder,
-	snap *clientSnapshot,
-) (*RequestPreview, error) {
-	query := parsedURL.Query()
-	keys := slices.Sorted(maps.Keys(query))
-	queries := make(PreviewQueries, 0, len(keys))
-	for _, key := range keys {
-		values := make([]PreviewValue, len(query[key]))
-		for i := range values {
-			values[i] = PreviewValue{state: PreviewValueOmitted}
-		}
-		queries = append(queries, PreviewQuery{key: key, values: values})
-	}
-
-	safeURL := parsedURL.Clone()
-	safeURL.User = nil
-	safeURL.Path = ""
-	safeURL.RawPath = ""
-	safeURL.RawQuery = ""
-	safeURL.ForceQuery = false
-	safeURL.Fragment = ""
-	safeURL.RawFragment = ""
-	safeURL.Opaque = ""
-
-	semanticHeaders, orderedHeaders, err := previewMetadata(b, snap)
-	if err != nil {
-		return nil, err
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	body, err := previewBody(ctx, b.body, b.headers)
-	if err != nil {
-		return nil, err
-	}
-	if b.body.kind == requestBodyMultipart && b.body.generatedContentType {
-		deleteHeaderValues(semanticHeaders, "Content-Type")
-		deleteOrderedHeader(orderedHeaders, "Content-Type")
-	}
-
-	return &RequestPreview{
-		method: request.Method,
-		target: PreviewTarget{
-			scheme: parsedURL.Scheme,
-			host:   parsedURL.Host,
-			path:   PreviewValue{state: PreviewValueOmitted},
-		},
-		url:            safeURL,
-		query:          queries,
-		headers:        previewHeaderEntries(semanticHeaders),
-		orderedHeaders: previewOrderedHeaderEntries(orderedHeaders, semanticHeaders.Get("Content-Type")),
-		cookies:        previewCookieEntries(previewCookies(b, snap)),
-		contentType:    semanticHeaders.Get("Content-Type"),
-		body:           body,
-	}, nil
-}
-
 func (b PreviewBody) clone() PreviewBody { //nolint:gocritic // PreviewBody is an immutable value snapshot.
 	b.multipart = b.multipart.clone()
 	return b
@@ -551,7 +483,7 @@ func (b PreviewBody) clone() PreviewBody { //nolint:gocritic // PreviewBody is a
 
 func previewBody(
 	ctx context.Context,
-	selection requestBodySelection,
+	selection *requestBodyPlan,
 	headers *http.Header,
 ) (PreviewBody, error) {
 	body := PreviewBody{
@@ -669,7 +601,7 @@ func previewMultipart(ctx context.Context, multipart *Multipart) (*PreviewMultip
 	if multipart.canReplay && multipart.replayMaxBytes < 0 {
 		return nil, previewInvalidBodyError()
 	}
-	if multipart.boundary != "" && !validPreviewMultipartBoundary(multipart.boundary) {
+	if multipart.boundary != "" && !validMultipartBoundary(multipart.boundary) {
 		return nil, previewInvalidBodyError()
 	}
 
@@ -715,29 +647,6 @@ func previewMultipart(ctx context.Context, multipart *Multipart) (*PreviewMultip
 	return manifest, nil
 }
 
-func validPreviewMultipartBoundary(boundary string) bool {
-	if len(boundary) < 1 || len(boundary) > 70 {
-		return false
-	}
-	last := len(boundary) - 1
-	for i := range len(boundary) {
-		value := boundary[i]
-		if ('A' <= value && value <= 'Z') || ('a' <= value && value <= 'z') || ('0' <= value && value <= '9') {
-			continue
-		}
-		switch value {
-		case '\'', '(', ')', '+', '_', ',', '-', '.', '/', ':', '=', '?':
-			continue
-		case ' ':
-			if i != last {
-				continue
-			}
-		}
-		return false
-	}
-	return true
-}
-
 func previewInvalidBodyError() error {
 	return fmt.Errorf("%w: preview body", ErrInvalidConfigValue)
 }
@@ -756,69 +665,15 @@ func headerValue(headers *http.Header, key string) string {
 	return headers.Get(key)
 }
 
-func previewMetadata(b *RequestBuilder, snap *clientSnapshot) (http.Header, *orderedobject.Object[[]string], error) {
-	clientHeaders := http.Header{}
-	addHeaderValues(clientHeaders, snap.headers, snap.orderedHeaders)
-	clientAuth, err := previewAuthHeader(snap.auth)
-	if err != nil {
-		return nil, nil, err
-	}
-	if clientAuth {
-		clientHeaders.Set("Authorization", "preview-redacted")
-	}
-
-	semanticHeaders := clientHeaders.Clone()
-	if b.headers != nil {
-		overlayHeaderValues(semanticHeaders, *b.headers, b.orderedHeaders)
-	}
-
-	requestAuth, err := previewAuthHeader(b.auth)
-	if err != nil {
-		return nil, nil, err
-	}
-	if requestAuth {
-		semanticHeaders.Set("Authorization", "preview-redacted")
-	}
-
-	orderedHeaders := b.effectiveOrderedHeaders(snap)
-	syncOrderedHeaderValues(orderedHeaders, semanticHeaders)
-	return semanticHeaders, orderedHeaders, nil
-}
-
 func previewAuthHeader(auth AuthMethod) (bool, error) {
 	if auth == nil {
 		return false, nil
 	}
-	if isNilInterface(auth) {
-		return false, fmt.Errorf("%w: preview auth", ErrInvalidConfigValue)
+	_, recognized, err := builtInAuthShape(auth)
+	if err != nil {
+		return false, fmt.Errorf("%w: preview auth", err)
 	}
-
-	switch value := auth.(type) {
-	case BasicAuth:
-		if value.Username == "" || value.Password == "" {
-			return false, fmt.Errorf("%w: preview auth", ErrInvalidConfigValue)
-		}
-	case *BasicAuth:
-		if value.Username == "" || value.Password == "" {
-			return false, fmt.Errorf("%w: preview auth", ErrInvalidConfigValue)
-		}
-	case BearerAuth:
-		if value.Token == "" {
-			return false, fmt.Errorf("%w: preview auth", ErrInvalidConfigValue)
-		}
-	case *BearerAuth:
-		if value.Token == "" {
-			return false, fmt.Errorf("%w: preview auth", ErrInvalidConfigValue)
-		}
-	case CustomAuth:
-		if value.Header == "" {
-			return false, fmt.Errorf("%w: preview auth", ErrInvalidConfigValue)
-		}
-	case *CustomAuth:
-		if value.Header == "" {
-			return false, fmt.Errorf("%w: preview auth", ErrInvalidConfigValue)
-		}
-	default:
+	if !recognized {
 		return false, fmt.Errorf("%w: preview auth", ErrInvalidConfigValue)
 	}
 	return true, nil
@@ -865,55 +720,7 @@ type previewCookieName struct {
 	name string
 }
 
-func previewCookies(b *RequestBuilder, snap *clientSnapshot) []previewCookieName {
-	clientHeaders := http.Header{}
-	addHeaderValues(clientHeaders, snap.headers, snap.orderedHeaders)
-	defaults := parsePreviewCookieHeaders(clientHeaders.Values("Cookie"))
-	for _, cookie := range snap.cookies {
-		if cookie != nil && validPreviewCookieName(cookie.Name) {
-			defaults = append(defaults, previewCookieName{name: cookie.Name})
-		}
-	}
-
-	overrides := []previewCookieName{}
-	if b.headers != nil {
-		requestHeaders := http.Header{}
-		addHeaderValues(requestHeaders, *b.headers, b.orderedHeaders)
-		overrides = append(overrides, parsePreviewCookieHeaders(requestHeaders.Values("Cookie"))...)
-	}
-	for _, cookie := range b.cookies {
-		if cookie != nil && validPreviewCookieName(cookie.Name) {
-			overrides = append(overrides, previewCookieName{name: cookie.Name})
-		}
-	}
-
-	result := make([]previewCookieName, 0, len(defaults)+len(overrides))
-	positions := make(map[string]int, cap(result))
-	for _, layer := range [][]previewCookieName{defaults, overrides} {
-		for _, cookie := range layer {
-			if position, ok := positions[cookie.name]; ok {
-				result[position] = cookie
-				continue
-			}
-			positions[cookie.name] = len(result)
-			result = append(result, cookie)
-		}
-	}
-	return result
-}
-
-func parsePreviewCookieHeaders(headers []string) []previewCookieName {
-	cookies := headerCookies(http.Header{"Cookie": headers})
-	result := make([]previewCookieName, 0, len(cookies))
-	for _, cookie := range cookies {
-		if cookie != nil {
-			result = append(result, previewCookieName{name: cookie.Name})
-		}
-	}
-	return result
-}
-
-func validPreviewCookieName(name string) bool {
+func validCookieName(name string) bool {
 	return (&http.Cookie{Name: name}).Valid() == nil //nolint:gosec // G124: only validates the name; Preview never serializes or sends the cookie
 }
 

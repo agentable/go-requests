@@ -47,6 +47,8 @@ implementations only provide the four emission methods.
 - File-loading helpers and retry paths may log failures or retry events when a logger is configured.
 - `RequestBuilder.Preview` is silent even when a logger is configured. It does
   not enter delivery or emit a dry-run log event.
+- `RequestBuilder.Prepare` is also silent. Preparation failures are returned
+  only to the caller; no logger receives projected or source request data.
 - Preview validates method and resolved URL shape without calling
   `Request.Write`, `Request.WriteProxy`, `Request.AddCookie`, or another
   standard-library request serialization path. It returns a detached,
@@ -59,8 +61,8 @@ implementations only provide the four emission methods.
 - Do not pass `slog.Level*` values to `NewDefaultLogger`; use `requests.Level*`.
 - Do not require custom loggers to expose level configuration.
 - Do not parse package log messages as a stable machine-readable API.
-- Do not treat Preview output or Preview silence as a replacement for delivery
-  diagnostics; Preview intentionally does not observe middleware or transport
+- Do not treat Preview or Prepare output or silence as a replacement for
+  delivery diagnostics; neither operation observes middleware or transport
   behavior.
 
 ## Contract Invariants

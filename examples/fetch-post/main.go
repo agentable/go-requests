@@ -1,3 +1,4 @@
+// Package main demonstrates fetching and decoding one Post with go-requests.
 package main
 
 import (

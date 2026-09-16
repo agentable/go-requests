@@ -40,8 +40,7 @@ func (p testProfile) Options() []Option {
 func TestWithProfile(t *testing.T) {
 	client := newTestClient(t, WithProfile(testProfile{name: "option"}))
 
-	require.NotNil(t, client.headers)
-	assert.Equal(t, "option", client.headers.Get("X-Profile"))
+	assert.Equal(t, "option", client.metadata.headerValues().Get("X-Profile"))
 }
 
 func TestWithProfileReturnsOptionError(t *testing.T) {

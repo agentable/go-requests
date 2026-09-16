@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"strings"
 )
@@ -23,13 +24,35 @@ const (
 	requestBodyMultipart
 )
 
-type requestBodySelection struct {
+// requestBodyPlan is the single selected body source. The wire-oriented
+// fields remain separate from disclosure facts so owner capabilities cannot
+// alter delivery encoding or replay behavior.
+type requestBodyPlan struct {
 	kind                 requestBodyKind
 	value                any
+	valuePublic          bool
 	form                 url.Values
+	formOccurrences      []requestBodyFormOccurrence
 	multipart            *Multipart
 	contentType          string
 	generatedContentType bool
+}
+
+type requestBodyFormOccurrence struct {
+	name  string
+	value Value
+}
+
+func (p requestBodyPlan) formAllPublic() bool { //nolint:gocritic // Plans are value-like snapshots at the disclosure boundary.
+	if p.kind != requestBodyForm || len(p.formOccurrences) == 0 {
+		return false
+	}
+	for _, occurrence := range p.formOccurrences {
+		if !occurrence.value.isPublic() {
+			return false
+		}
+	}
+	return true
 }
 
 type preparedRequestBody struct {
@@ -56,12 +79,21 @@ func (b *RequestBuilder) Form(v any) *RequestBuilder {
 	if formFields == nil {
 		formFields = url.Values{}
 	}
-	b.selectBody(requestBodySelection{
+	plan := requestBodyPlan{
 		kind:                 requestBodyForm,
 		form:                 formFields,
 		contentType:          "application/x-www-form-urlencoded",
 		generatedContentType: true,
-	})
+	}
+	for key, values := range formFields {
+		for _, value := range values {
+			plan.formOccurrences = append(plan.formOccurrences, requestBodyFormOccurrence{
+				name:  key,
+				value: privateRequestValue(value),
+			})
+		}
+	}
+	b.selectBody(plan)
 
 	return b
 }
@@ -81,7 +113,7 @@ func (b *RequestBuilder) FormFields(fields any) *RequestBuilder {
 
 	for key, value := range values {
 		for _, v := range value {
-			formFields.Add(key, v)
+			b.addFormField(formFields, key, privateRequestValue(v))
 		}
 	}
 	return b
@@ -90,13 +122,21 @@ func (b *RequestBuilder) FormFields(fields any) *RequestBuilder {
 // FormField adds or updates a form field.
 // Without files, the resulting form body is buffered and safe to replay for retries.
 func (b *RequestBuilder) FormField(key, val string) *RequestBuilder {
-	b.activateForm().Add(key, val)
+	b.addFormField(b.activateForm(), key, privateRequestValue(val))
+	return b
+}
+
+// FormFieldValue adds a disclosure-tagged URL-encoded form occurrence.
+// Public form bytes are available to Prepare only when every actual form
+// occurrence in the selected form is public.
+func (b *RequestBuilder) FormFieldValue(key string, value Value) *RequestBuilder {
+	b.addFormField(b.activateForm(), key, value)
 	return b
 }
 
 func (b *RequestBuilder) activateForm() url.Values {
 	if b.body.kind != requestBodyForm {
-		b.selectBody(requestBodySelection{
+		b.selectBody(requestBodyPlan{
 			kind:                 requestBodyForm,
 			form:                 url.Values{},
 			contentType:          "application/x-www-form-urlencoded",
@@ -106,11 +146,35 @@ func (b *RequestBuilder) activateForm() url.Values {
 	return b.body.form
 }
 
+func (b *RequestBuilder) addFormField(form url.Values, key string, value Value) {
+	form.Add(key, value.rawValue())
+	b.body.formOccurrences = append(b.body.formOccurrences, requestBodyFormOccurrence{
+		name:  key,
+		value: value,
+	})
+}
+
 // DelFormField removes one or more form fields.
 func (b *RequestBuilder) DelFormField(key ...string) *RequestBuilder {
 	if b.body.kind == requestBodyForm {
 		for _, k := range key {
 			b.body.form.Del(k)
+		}
+		if len(b.body.formOccurrences) > 0 {
+			kept := b.body.formOccurrences[:0]
+			for _, occurrence := range b.body.formOccurrences {
+				removed := false
+				for _, name := range key {
+					if occurrence.name == name {
+						removed = true
+						break
+					}
+				}
+				if !removed {
+					kept = append(kept, occurrence)
+				}
+			}
+			b.body.formOccurrences = kept
 		}
 	}
 	return b
@@ -127,7 +191,7 @@ func (b *RequestBuilder) Multipart(m *Multipart) *RequestBuilder {
 		b.setPreparationError(fmt.Errorf("%w: multipart body", ErrInvalidConfigValue), preparationErrorClassInvalidConfigValue)
 		return b
 	}
-	b.selectBody(requestBodySelection{
+	b.selectBody(requestBodyPlan{
 		kind:                 requestBodyMultipart,
 		multipart:            m,
 		generatedContentType: true,
@@ -138,7 +202,7 @@ func (b *RequestBuilder) Multipart(m *Multipart) *RequestBuilder {
 // JSON sets the request body as JSON and Content-Type to application/json.
 // The encoded body is buffered and is safe to replay for retries.
 func (b *RequestBuilder) JSON(v any) *RequestBuilder {
-	b.selectBody(requestBodySelection{
+	b.selectBody(requestBodyPlan{
 		kind:                 requestBodyJSON,
 		value:                v,
 		contentType:          "application/json",
@@ -150,7 +214,7 @@ func (b *RequestBuilder) JSON(v any) *RequestBuilder {
 // XML sets the request body as XML and Content-Type to application/xml.
 // The encoded body is buffered and is safe to replay for retries.
 func (b *RequestBuilder) XML(v any) *RequestBuilder {
-	b.selectBody(requestBodySelection{
+	b.selectBody(requestBodyPlan{
 		kind:                 requestBodyXML,
 		value:                v,
 		contentType:          "application/xml",
@@ -162,7 +226,7 @@ func (b *RequestBuilder) XML(v any) *RequestBuilder {
 // YAML sets the request body as YAML and Content-Type to application/yaml.
 // The encoded body is buffered and is safe to replay for retries.
 func (b *RequestBuilder) YAML(v any) *RequestBuilder {
-	b.selectBody(requestBodySelection{
+	b.selectBody(requestBodyPlan{
 		kind:                 requestBodyYAML,
 		value:                v,
 		contentType:          "application/yaml",
@@ -174,9 +238,21 @@ func (b *RequestBuilder) YAML(v any) *RequestBuilder {
 // Text sets the request body as plain text and Content-Type to text/plain.
 // The body is buffered and is safe to replay for retries.
 func (b *RequestBuilder) Text(v string) *RequestBuilder {
-	b.selectBody(requestBodySelection{
+	b.selectBody(requestBodyPlan{
 		kind:                 requestBodyText,
 		value:                v,
+		contentType:          "text/plain",
+		generatedContentType: true,
+	})
+	return b
+}
+
+// TextValue selects a text body with an explicit disclosure capability.
+func (b *RequestBuilder) TextValue(value Value) *RequestBuilder {
+	b.selectBody(requestBodyPlan{
+		kind:                 requestBodyText,
+		value:                value.rawValue(),
+		valuePublic:          value.isPublic(),
 		contentType:          "text/plain",
 		generatedContentType: true,
 	})
@@ -186,14 +262,26 @@ func (b *RequestBuilder) Text(v string) *RequestBuilder {
 // Bytes sets the request body as raw bytes without changing Content-Type.
 // The body is buffered and is safe to replay for retries.
 func (b *RequestBuilder) Bytes(v []byte) *RequestBuilder {
-	b.selectBody(requestBodySelection{kind: requestBodyBytes, value: v})
+	b.selectBody(requestBodyPlan{kind: requestBodyBytes, value: v})
+	return b
+}
+
+// BytesPayload selects an owned byte body with an explicit disclosure
+// capability. Payload already owns a clone; clone once more at the builder
+// boundary so the selected plan never aliases a caller-owned slice.
+func (b *RequestBuilder) BytesPayload(payload Payload) *RequestBuilder {
+	b.selectBody(requestBodyPlan{
+		kind:        requestBodyBytes,
+		value:       payload.cloneBytes(),
+		valuePublic: payload.isPublic(),
+	})
 	return b
 }
 
 // Reader sets a one-shot raw request body and optional Content-Type.
 // The body is not replayable unless r itself is seekable and sized.
 func (b *RequestBuilder) Reader(r io.Reader, contentType string) *RequestBuilder {
-	b.selectBody(requestBodySelection{
+	b.selectBody(requestBodyPlan{
 		kind:                 requestBodyReader,
 		value:                r,
 		contentType:          contentType,
@@ -202,7 +290,7 @@ func (b *RequestBuilder) Reader(r io.Reader, contentType string) *RequestBuilder
 	return b
 }
 
-func (b *RequestBuilder) selectBody(body requestBodySelection) {
+func (b *RequestBuilder) selectBody(body requestBodyPlan) { //nolint:gocritic // Selection is a value-like replacement of builder body state.
 	if b.body.generatedContentType {
 		b.delHeader("Content-Type")
 	}
@@ -213,40 +301,48 @@ func (b *RequestBuilder) selectBody(body requestBodySelection) {
 }
 
 func (b *RequestBuilder) prepareBody(snap *clientSnapshot) (preparedRequestBody, error) {
-	contentType := b.headers.Get("Content-Type")
-	switch b.body.kind {
+	headers := b.compatibilityHeaders()
+	if headers == nil {
+		headers = &http.Header{}
+	}
+	return prepareBodyFromPlan(b.body, *headers, snap)
+}
+
+func prepareBodyFromPlan(body requestBodyPlan, headers http.Header, snap *clientSnapshot) (preparedRequestBody, error) { //nolint:gocritic // The plan is a detached, value-like delivery snapshot.
+	contentType := headers.Get("Content-Type")
+	switch body.kind {
 	case requestBodyNone:
 		return preparedRequestBody{}, nil
 	case requestBodyJSON:
-		return b.prepareEncodedBody(contentType, snap.jsonEncoder.Encode)
+		return prepareEncodedBodyValue(body.value, contentType, snap.jsonEncoder.Encode)
 	case requestBodyXML:
-		return b.prepareEncodedBody(contentType, snap.xmlEncoder.Encode)
+		return prepareEncodedBodyValue(body.value, contentType, snap.xmlEncoder.Encode)
 	case requestBodyYAML:
-		return b.prepareEncodedBody(contentType, snap.yamlEncoder.Encode)
+		return prepareEncodedBodyValue(body.value, contentType, snap.yamlEncoder.Encode)
 	case requestBodyText:
-		return replayableRequestBody([]byte(b.body.value.(string)), contentType), nil
+		return replayableRequestBody([]byte(body.value.(string)), contentType), nil
 	case requestBodyBytes:
-		return replayableRequestBody(b.body.value.([]byte), contentType), nil
+		return replayableRequestBody(body.value.([]byte), contentType), nil
 	case requestBodyReader:
-		body, err := encodeRawBody(b.body.value)
+		reader, err := encodeRawBody(body.value)
 		if err != nil {
 			return preparedRequestBody{}, err
 		}
-		return prepareReaderBody(body, contentType)
+		return prepareReaderBody(reader, contentType)
 	case requestBodyForm:
-		return replayableRequestBody([]byte(b.body.form.Encode()), contentType), nil
+		return replayableRequestBody([]byte(body.form.Encode()), contentType), nil
 	case requestBodyMultipart:
-		body, generatedContentType, err := b.body.multipart.reader()
+		reader, generatedContentType, err := body.multipart.reader()
 		if err != nil {
 			return preparedRequestBody{}, err
 		}
-		if !b.body.generatedContentType {
+		if !body.generatedContentType {
 			generatedContentType = ""
 		}
-		if !b.body.multipart.canReplay {
-			return preparedRequestBody{body: body, contentType: generatedContentType}, nil
+		if !body.multipart.canReplay {
+			return preparedRequestBody{body: reader, contentType: generatedContentType}, nil
 		}
-		data, err := io.ReadAll(body)
+		data, err := io.ReadAll(reader)
 		if err != nil {
 			return preparedRequestBody{}, fmt.Errorf("read replayable multipart body: %w", err)
 		}
@@ -256,14 +352,15 @@ func (b *RequestBuilder) prepareBody(snap *clientSnapshot) (preparedRequestBody,
 	}
 }
 
-func (b *RequestBuilder) prepareEncodedBody(
+func prepareEncodedBodyValue(
+	value any,
 	contentType string,
 	encode func(any) (io.Reader, error),
 ) (preparedRequestBody, error) {
 	if contentType == "" {
 		return preparedRequestBody{}, fmt.Errorf("%w: missing Content-Type", ErrUnsupportedContentType)
 	}
-	body, err := encode(b.body.value)
+	body, err := encode(value)
 	if err != nil {
 		return preparedRequestBody{}, err
 	}

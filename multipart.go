@@ -82,6 +82,44 @@ func (m *Multipart) Replayable(maxBytes int64) *Multipart {
 	return m
 }
 
+func validateMultipartFileMetadata(part FilePart) error {
+	if value := mime.FormatMediaType("form-data", map[string]string{
+		"name":     part.Field,
+		"filename": part.Filename,
+	}); value == "" {
+		return fmt.Errorf("%w: multipart filename", ErrInvalidConfigValue)
+	}
+	if part.ContentType != "" {
+		if _, _, err := mime.ParseMediaType(part.ContentType); err != nil {
+			return fmt.Errorf("%w: multipart content type", ErrInvalidConfigValue)
+		}
+	}
+	return nil
+}
+
+func validMultipartBoundary(boundary string) bool {
+	if len(boundary) < 1 || len(boundary) > 70 {
+		return false
+	}
+	last := len(boundary) - 1
+	for i := range len(boundary) {
+		value := boundary[i]
+		if ('A' <= value && value <= 'Z') || ('a' <= value && value <= 'z') || ('0' <= value && value <= '9') {
+			continue
+		}
+		switch value {
+		case '\'', '(', ')', '+', '_', ',', '-', '.', '/', ':', '=', '?':
+			continue
+		case ' ':
+			if i != last {
+				continue
+			}
+		}
+		return false
+	}
+	return true
+}
+
 func (m *Multipart) reader() (io.Reader, string, error) {
 	if m.canReplay {
 		return m.bufferedReader()
@@ -160,8 +198,11 @@ func writeFilePart(writer *mimeMultipart.Writer, part FilePart) error {
 	if part.Field == "" {
 		return fmt.Errorf("%w: multipart field", ErrInvalidConfigValue)
 	}
-	if part.Body == nil {
+	if isNilInterface(part.Body) {
 		return fmt.Errorf("%w: multipart body", ErrInvalidConfigValue)
+	}
+	if err := validateMultipartFileMetadata(part); err != nil {
+		return err
 	}
 
 	writerPart, err := createFilePart(writer, part)

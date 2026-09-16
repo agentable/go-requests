@@ -295,8 +295,8 @@ func TestNew_WithHeaders(t *testing.T) {
 	h.Set("X-One", "1")
 	h.Set("X-Two", "2")
 	c := newTestClient(t, WithHeaders(h))
-	assert.Equal(t, "1", c.headers.Get("X-One"))
-	assert.Equal(t, "2", c.headers.Get("X-Two"))
+	assert.Equal(t, "1", c.metadata.headerValues().Get("X-One"))
+	assert.Equal(t, "2", c.metadata.headerValues().Get("X-Two"))
 }
 
 func TestNew_WithHeadersCapturesCallerValues(t *testing.T) {
@@ -584,7 +584,7 @@ func createOptionTestTLSServer(t *testing.T) *httptest.Server {
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	cert, err := tls.LoadX509KeyPair(".github/testdata/cert.pem", ".github/testdata/key.pem")
+	cert, err := tls.LoadX509KeyPair(testCertificatePath, testPrivateKeyPath)
 	require.NoError(t, err)
 	server.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
 	server.StartTLS()
@@ -691,7 +691,7 @@ func TestNew_WithTLSConfigDoesNotRaceWithCallerMutation(t *testing.T) {
 
 func TestNew_WithClientCertificateAndTLSServerName(t *testing.T) {
 	c := newTestClient(t,
-		WithClientCertificate(".github/testdata/cert.pem", ".github/testdata/key.pem"),
+		WithClientCertificate(testCertificatePath, testPrivateKeyPath),
 		WithTLSServerName("example.com"),
 	)
 	require.NotNil(t, c.tlsConfig)
@@ -700,14 +700,14 @@ func TestNew_WithClientCertificateAndTLSServerName(t *testing.T) {
 }
 
 func TestNew_WithCertificatesAndRootCertificates(t *testing.T) {
-	cert, err := tls.LoadX509KeyPair(".github/testdata/cert.pem", ".github/testdata/key.pem")
+	cert, err := tls.LoadX509KeyPair(testCertificatePath, testPrivateKeyPath)
 	require.NoError(t, err)
-	rootPEM, err := os.ReadFile(".github/testdata/cert.pem")
+	rootPEM, err := os.ReadFile(testCertificatePath)
 	require.NoError(t, err)
 
 	c := newTestClient(t,
 		WithCertificates(cert),
-		WithRootCertificate(".github/testdata/cert.pem"),
+		WithRootCertificate(testCertificatePath),
 		WithRootCertificateFromString(string(rootPEM)),
 	)
 	require.NotNil(t, c.tlsConfig)

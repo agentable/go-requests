@@ -80,10 +80,10 @@ var (
 	// url.Values.
 	ErrUnsupportedFormFieldsType = errors.New("unsupported form fields type")
 
-	// ErrNotSupportSaveMethod is returned when [Response.Save] is given a
+	// ErrUnsupportedSaveType is returned when [Response.Save] is given a
 	// destination it does not understand. Use a string path, *os.File, or
 	// io.Writer.
-	ErrNotSupportSaveMethod = errors.New("unsupported save type")
+	ErrUnsupportedSaveType = errors.New("unsupported save type")
 
 	// ErrInvalidTransportType is returned when a TLS or HTTP/2 helper is
 	// asked to mutate a transport that is not *http.Transport. Set the
@@ -112,6 +112,19 @@ var (
 	// request helpers when a value cannot be applied. Wrapped errors name the
 	// offending option or request setting.
 	ErrInvalidConfigValue = errors.New("invalid config value")
+
+	// ErrPreparationInvalidBudget is returned when PrepareOptions requests a
+	// negative retained-byte budget.
+	ErrPreparationInvalidBudget = errors.New("invalid preparation budget")
+
+	// ErrPreparationNotPreparable is returned when a request contains an
+	// active collaborator or target substitution that cannot be inspected
+	// without invoking caller-owned behavior or making an unsafe disclosure.
+	ErrPreparationNotPreparable = errors.New("request is not preparable")
+
+	// ErrPreparationBodyTooLarge is returned when public body bytes exceed the
+	// retained-byte budget for Prepare.
+	ErrPreparationBodyTooLarge = errors.New("prepared body exceeds byte budget")
 )
 
 // IsTimeout reports whether err is or wraps a deadline-driven failure:

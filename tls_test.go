@@ -8,18 +8,28 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/test-go/testify/require"
 )
 
+const (
+	testCertificatePath = "testdata/cert.pem"
+	testPrivateKeyPath  = "testdata/key.pem"
+)
+
 func createTestTLSServer() (*httptest.Server, error) {
+	return createTestTLSServerFromFiles(testCertificatePath, testPrivateKeyPath)
+}
+
+func createTestTLSServerFromFiles(certPath, keyPath string) (*httptest.Server, error) {
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	cert, err := tls.LoadX509KeyPair(".github/testdata/cert.pem", ".github/testdata/key.pem")
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
 		server.Close()
 		return nil, fmt.Errorf("load test certificate: %w", err)
@@ -48,7 +58,7 @@ func TestSetTLSConfigWithCert(t *testing.T) {
 	require.NoError(t, err)
 	defer server.Close()
 
-	cert, err := os.ReadFile(".github/testdata/cert.pem")
+	cert, err := os.ReadFile(testCertificatePath)
 	require.NoError(t, err)
 	certPool := x509.NewCertPool()
 	require.True(t, certPool.AppendCertsFromPEM(cert))
@@ -75,21 +85,15 @@ func TestInsecureSkipVerify(t *testing.T) {
 }
 
 func TestCreateTestTLSServerMissingCertificate(t *testing.T) {
-	originalCertPath := ".github/testdata/cert.pem"
-	tempCertPath := ".github/testdata/cert.pem.bak"
-	require.NoError(t, os.Rename(originalCertPath, tempCertPath))
-	defer func() {
-		require.NoError(t, os.Rename(tempCertPath, originalCertPath))
-	}()
-
-	server, err := createTestTLSServer()
+	missingCertPath := filepath.Join(t.TempDir(), "cert.pem")
+	server, err := createTestTLSServerFromFiles(missingCertPath, testPrivateKeyPath)
 	require.Error(t, err)
 	assert.Nil(t, server)
 	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
 func TestClientCertificates(t *testing.T) {
-	serverCert, err := tls.LoadX509KeyPair(".github/testdata/cert.pem", ".github/testdata/key.pem")
+	serverCert, err := tls.LoadX509KeyPair(testCertificatePath, testPrivateKeyPath)
 	require.NoError(t, err, "load server certificate failed")
 
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -102,7 +106,7 @@ func TestClientCertificates(t *testing.T) {
 		_, _ = w.Write([]byte("lack of client certificate"))
 	}))
 	clientCertPool := x509.NewCertPool()
-	clientCertData, err := os.ReadFile(".github/testdata/cert.pem")
+	clientCertData, err := os.ReadFile(testCertificatePath)
 	require.NoError(t, err, "load client certificate failed")
 	clientCertPool.AppendCertsFromPEM(clientCertData)
 
@@ -117,7 +121,7 @@ func TestClientCertificates(t *testing.T) {
 	client := newTestClient(t, WithBaseURL(server.URL))
 
 	t.Run("use client certificate", func(t *testing.T) {
-		clientCert, err := tls.LoadX509KeyPair(".github/testdata/cert.pem", ".github/testdata/key.pem")
+		clientCert, err := tls.LoadX509KeyPair(testCertificatePath, testPrivateKeyPath)
 		require.NoError(t, err, "load client certificate failed")
 
 		require.NoError(t, client.setTLSConfig(&tls.Config{InsecureSkipVerify: true}))

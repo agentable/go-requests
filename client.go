@@ -21,9 +21,8 @@ import (
 type Client struct {
 	mu             sync.RWMutex
 	baseURL        string
-	headers        *http.Header
+	metadata       requestMetadata
 	orderedHeaders *orderedobject.Object[[]string]
-	cookies        []*http.Cookie
 	middlewares    []Middleware
 	tlsConfig      *tls.Config
 	retry          RetryPolicy
@@ -44,9 +43,8 @@ type Client struct {
 
 type clientSnapshot struct {
 	baseURL        string
-	headers        http.Header
+	metadata       requestMetadata
 	orderedHeaders *orderedobject.Object[[]string]
-	cookies        []*http.Cookie
 	middlewares    []Middleware
 	retry          RetryPolicy
 	httpClient     *http.Client
@@ -146,9 +144,8 @@ func (c *Client) clone() *Client {
 
 	clone := &Client{
 		baseURL:        c.baseURL,
-		headers:        cloneHeaderPtr(c.headers),
+		metadata:       c.metadata.clone(),
 		orderedHeaders: cloneOrderedHeaders(c.orderedHeaders),
-		cookies:        cloneCookies(c.cookies),
 		middlewares:    slices.Clone(c.middlewares),
 		tlsConfig:      cloneTLSConfig(c.tlsConfig),
 		retry:          c.retry,
@@ -168,27 +165,6 @@ func (c *Client) clone() *Client {
 	}
 	clone.httpClient = cloneHTTPClient(c.httpClient, clone.tlsConfig)
 	return clone
-}
-
-func cloneHeaderPtr(headers *http.Header) *http.Header {
-	if headers == nil {
-		return nil
-	}
-	clone := headers.Clone()
-	return &clone
-}
-
-func cloneCookies(cookies []*http.Cookie) []*http.Cookie {
-	if len(cookies) == 0 {
-		return nil
-	}
-	clones := make([]*http.Cookie, len(cookies))
-	for i, cookie := range cookies {
-		clone := new(*cookie) //nolint:gosec // clone preserves caller-provided cookie attributes
-		clone.Unparsed = slices.Clone(cookie.Unparsed)
-		clones[i] = clone
-	}
-	return clones
 }
 
 // setBaseURL sets the base URL.
@@ -212,11 +188,8 @@ func (c *Client) setDefaultHeaders(headers http.Header) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	clone := headers.Clone()
-	if clone == nil {
-		clone = http.Header{}
-	}
-	c.headers = &clone
+	c.metadata.headers = nil
+	c.metadata.setHeaders(headers)
 	c.orderedHeaders = nil
 }
 
@@ -227,10 +200,18 @@ func (c *Client) setDefaultOrderedHeaders(headers *orderedobject.Object[[]string
 
 	c.orderedHeaders = cloneOrderedHeaders(headers)
 	if c.orderedHeaders == nil {
-		c.headers = nil
+		c.metadata.headers = nil
 		return
 	}
-	c.headers = new(headerFromOrderedHeaders(c.orderedHeaders))
+	c.metadata.headers = nil
+	for _, entry := range c.orderedHeaders.Entries() {
+		if isPseudoHeader(entry.Key) {
+			continue
+		}
+		for _, value := range entry.Value {
+			c.metadata.addHeader(entry.Key, privateRequestValue(value))
+		}
+	}
 }
 
 // setDefaultHeader adds or updates a default header.
@@ -238,10 +219,7 @@ func (c *Client) setDefaultHeader(key, value string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.headers == nil {
-		c.headers = &http.Header{}
-	}
-	c.headers.Set(key, value)
+	c.metadata.setHeader(key, privateRequestValue(value))
 	if c.orderedHeaders != nil {
 		setOrderedHeaderValues(&c.orderedHeaders, key, []string{value})
 	}
@@ -321,32 +299,19 @@ func (c *Client) setDefaultCookie(name, value string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.cookies = append(c.cookies, &http.Cookie{Name: name, Value: value}) //nolint:gosec // callers control default cookie attributes
+	c.metadata.addCookie(name, privateRequestValue(value))
 }
 
 func (c *Client) snapshot() clientSnapshot {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	headers := http.Header{}
-	if c.headers != nil {
-		headers = c.headers.Clone()
-	}
-
-	cookies := make([]*http.Cookie, len(c.cookies))
-	for i, cookie := range c.cookies {
-		clone := new(*cookie) //nolint:gosec // snapshot preserves caller-provided cookie attributes
-		clone.Unparsed = slices.Clone(cookie.Unparsed)
-		cookies[i] = clone
-	}
-
 	middlewares := slices.Clone(c.middlewares)
 
 	return clientSnapshot{
 		baseURL:        c.baseURL,
-		headers:        headers,
+		metadata:       c.metadata.clone(),
 		orderedHeaders: cloneOrderedHeaders(c.orderedHeaders),
-		cookies:        cookies,
 		middlewares:    middlewares,
 		retry:          c.retry,
 		httpClient:     c.httpClient,
