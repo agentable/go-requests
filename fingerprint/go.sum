@@ -1,7 +1,7 @@
 github.com/agentable/go-orderedobject v0.3.0 h1:7j7qKnfhVscM7BgS6cbBeRCu8KmlV9fCFuRcsFIO8Ho=
 github.com/agentable/go-orderedobject v0.3.0/go.mod h1:dfHQIVTnx+D7uab3hwyZH1BjUGpXeaDJwKbq62skOgs=
-github.com/agentable/go-requests v0.1.17 h1:8auvibRVhDC1zmZ8ww8BoVkZVhC+9WbXLeNpZLSCD1A=
-github.com/agentable/go-requests v0.1.17/go.mod h1:QaS5HIfit8L51MsdO1rnyk4bbFzt32ljLcFjMbhizn8=
+github.com/agentable/go-requests v0.1.18 h1:YSB/dVFydU61/ZIwak5JulJrHvm27goabSVo7Lz81hU=
+github.com/agentable/go-requests v0.1.18/go.mod h1:W6VnXWYcLbZbUpHqhbyAfACYrkCHFKNGg2tNkfNJFt4=
 github.com/andybalholm/brotli v1.2.5 h1:BSI8V4zmx/3BAn6OKjF1PmfVq7Aoi52AdFsi6bpCx+s=
 github.com/andybalholm/brotli v1.2.5/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
 github.com/goccy/go-yaml v1.19.2 h1:PmFC1S6h8ljIz6gMRBopkjP1TVT7xuwrButHID66PoM=
