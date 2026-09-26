@@ -352,7 +352,10 @@ func compileQueryOccurrences(baseURL, requestPath string, builder []requestOccur
 	}
 	requestQuery, err := url.ParseQuery(requestURL.RawQuery)
 	if err != nil {
-		return nil, err
+		if !requestURL.IsAbs() || len(builder) != 0 {
+			return nil, err
+		}
+		requestQuery = nil // The raw absolute URL needs no structured query projection.
 	}
 
 	baseQuery := url.Values(nil)

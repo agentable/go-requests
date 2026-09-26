@@ -396,7 +396,7 @@ func TestRequestPreparationChecksContextAcrossProjectionCollections(t *testing.T
 }
 
 func TestRequestPreparationErrorSanitization(t *testing.T) {
-	_, err := newTestClient(t).Get("https://user:password@example.test/items?secret=%zz").
+	_, err := newTestClient(t).Get("https://user:password@example.test/items?secret=%zz").Query("other", "value").
 		Prepare(t.Context(), PrepareOptions{})
 	assert.ErrorIs(t, err, ErrRequestCreationFailed)
 	assert.NotContains(t, err.Error(), "password")

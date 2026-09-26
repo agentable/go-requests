@@ -1139,7 +1139,7 @@ func TestRequestPreviewPreflightErrorsAreSafeAndClassified(t *testing.T) {
 		},
 		{
 			name:    "invalid query escape",
-			builder: newTestClient(t).Get("https://user:password@example.com/items?secret=%zz#fragment"),
+			builder: newTestClient(t).Get("https://user:password@example.com/items?secret=%zz#fragment").Query("other", "value"),
 		},
 	}
 
@@ -1658,6 +1658,25 @@ func TestSendInvalidResolvedURLDoesNotDispatch(t *testing.T) {
 	assert.Zero(t, atomic.LoadInt64(&source.readBytes))
 	assert.False(t, source.closed.Load())
 	assert.False(t, called.Load())
+}
+
+func TestSendAbsoluteURLPreservesRawQueryWithoutBuilderValues(t *testing.T) {
+	for _, rawQuery := range []string{"q=a;b", "q=%ZZ"} {
+		t.Run(rawQuery, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = fmt.Fprint(w, r.RequestURI)
+			}))
+			defer server.Close()
+
+			client := newTestClient(t)
+			resp, err := client.Get(server.URL + "/search?" + rawQuery).Send(t.Context())
+			require.NoError(t, err)
+			body, err := io.ReadAll(resp.Raw().Body)
+			require.NoError(t, err)
+			assert.Equal(t, "/search?"+rawQuery, string(body))
+			assert.Equal(t, rawQuery, resp.URL().RawQuery)
+		})
+	}
 }
 
 func TestSendMalformedRequestQueryDoesNotDispatch(t *testing.T) {

@@ -306,8 +306,12 @@ func TestRequestPlanMapsMethodAndURLFailuresToCreationSentinel(t *testing.T) {
 			builder: newTestClient(t).Request("bad method", "https://user:password@example.test/items?secret=value"),
 		},
 		{
-			name:    "invalid query escape",
-			builder: newTestClient(t).Get("https://user:password@example.test/items?secret=%zz"),
+			name:    "invalid query escape with builder value",
+			builder: newTestClient(t).Get("https://user:password@example.test/items?secret=%zz").Query("other", "value"),
+		},
+		{
+			name:    "invalid relative query without base URL",
+			builder: newTestClient(t).Get("/items?secret=%zz"),
 		},
 	}
 

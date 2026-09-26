@@ -82,8 +82,14 @@ func configureHTTP2Transport(transport *http.Transport) error {
 		return nil
 	}
 
+	if transport.Protocols == nil {
+		transport.Protocols = new(http.Protocols)
+		transport.Protocols.SetHTTP1(true)
+	}
+	transport.Protocols.SetHTTP2(true)
+	ensureHTTP2NextProtos(transport)
 	transport.ForceAttemptHTTP2 = true
-	return http2.ConfigureTransport(transport)
+	return nil
 }
 
 func isHTTP2Configured(transport *http.Transport) bool {
