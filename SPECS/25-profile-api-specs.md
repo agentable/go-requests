@@ -32,6 +32,25 @@ HTTP/3 is intentionally outside the profile contract. Its extension returns a
 closable transport handle that callers pass to `WithTransport`, keeping QUIC
 transport ownership visible at the call site.
 
+## Fingerprint Configuration Ownership
+
+Fingerprint profiles install `WithTLSHandshake` after establishing TLS defaults.
+The root binds dialing and TLS config to each standard transport; the extension
+owns the uTLS preset, config translation, connection-state adapter, and lazy
+session cache. Clones may share the thread-safe cache, but use their own effective
+TLS enablement, dialer, trust policy and connection pools. Reapplying all profile
+options during Clone is forbidden because it would overwrite later caller choices.
+
+Use `WithProfile(fingerprint.Chrome())` after any whole-client or transport
+replacement. The standalone `fingerprint.ConfigureTransport` helper mutates and
+captures exactly the supplied standard transport: apply it after the final raw
+clone and reapply it after subsequent raw clones. Configuring a raw transport
+before `WithTransport` / `WithHTTPClient` does not create managed rebinding;
+requests clients should use the profile integration instead.
+
+TLS dial-hook scope and callback lifetime boundaries are defined by
+[SPECS/20-client-api-specs.md](20-client-api-specs.md#custom-tls-handshakes).
+
 ## Scope
 
 Profiles MAY contribute:

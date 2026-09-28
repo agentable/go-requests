@@ -55,6 +55,10 @@ are not another spelling for the zero-retry default.
 
 ## TLS
 
+`WithTLSHandshake` is opt-in; no managed handshake is installed by default.
+When installed, it observes the active standard transport TLS config and handshake
+timeout. A fingerprint profile supplies its uTLS handshake through this option.
+
 | Field | Default | Source | Why |
 |---|---|---|---|
 | TLS config | `nil` (Go default `tls.Config`) | `client.go: newClient` | Passthrough to `crypto/tls`. The Go standard library already defaults to a safe configuration; we do not override it. |

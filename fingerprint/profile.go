@@ -97,7 +97,12 @@ func (p profile) configure(c *requests.Client) error {
 			return err
 		}
 	}
-	return ConfigureTransport(transport, p.helloID)
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	ensureNextProtos(transport.TLSClientConfig)
+	transport.ForceAttemptHTTP2 = true
+	return requests.WithTLSHandshake(newTLSHandshake(p.helloID))(c)
 }
 
 func helloName(helloID utls.ClientHelloID) string {

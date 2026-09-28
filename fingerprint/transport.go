@@ -15,6 +15,9 @@ import (
 )
 
 // ConfigureTransport configures transport to use helloID for TLS handshakes.
+// It binds to this exact transport. Apply it after the final Transport.Clone;
+// reapply it on any later clone. For requests clients, use WithProfile after
+// WithTransport or WithHTTPClient so managed clones rebind automatically.
 // Fingerprint presets control the supported groups sent in ClientHello; an
 // explicit CurvePreferences value does not override the preset. Use the
 // standard TLS transport when an explicit curve allowlist is required.
@@ -32,9 +35,7 @@ func ConfigureTransport(transport *http.Transport, helloID utls.ClientHelloID) e
 	ensureNextProtos(transport.TLSClientConfig)
 	transport.ForceAttemptHTTP2 = true
 
-	sessionCache := sync.OnceValue(func() utls.ClientSessionCache {
-		return utls.NewLRUClientSessionCache(0)
-	})
+	handshake := newTLSHandshake(helloID)
 	transport.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		dialContext := transport.DialContext
 		if dialContext == nil {
@@ -46,18 +47,36 @@ func ConfigureTransport(transport *http.Transport, helloID utls.ClientHelloID) e
 			return nil, err
 		}
 
-		config := utlsConfig(transport.TLSClientConfig, addr)
-		if transport.TLSClientConfig != nil && transport.TLSClientConfig.ClientSessionCache != nil {
-			config.ClientSessionCache = sessionCache()
+		config := &tls.Config{}
+		if transport.TLSClientConfig != nil {
+			config = transport.TLSClientConfig.Clone()
 		}
-		conn := utls.UClient(rawConn, config, helloID)
-		if err := conn.HandshakeContext(ctx); err != nil {
+		if config.ServerName == "" {
+			config.ServerName, _, _ = net.SplitHostPort(addr)
+		}
+		conn, err := handshake(ctx, rawConn, config)
+		if err != nil {
 			_ = rawConn.Close()
+			return nil, err
+		}
+		return conn, nil
+	}
+	return nil
+}
+
+func newTLSHandshake(helloID utls.ClientHelloID) func(context.Context, net.Conn, *tls.Config) (net.Conn, error) {
+	sessionCache := sync.OnceValue(func() utls.ClientSessionCache { return utls.NewLRUClientSessionCache(0) })
+	return func(ctx context.Context, raw net.Conn, config *tls.Config) (net.Conn, error) {
+		converted := utlsConfig(config)
+		if config.ClientSessionCache != nil {
+			converted.ClientSessionCache = sessionCache()
+		}
+		conn := utls.UClient(raw, converted, helloID)
+		if err := conn.HandshakeContext(ctx); err != nil {
 			return nil, err
 		}
 		return &tlsConnection{UConn: conn}, nil
 	}
-	return nil
 }
 
 type tlsConnection struct {
@@ -82,16 +101,12 @@ func (c *tlsConnection) ConnectionState() tls.ConnectionState {
 	}
 }
 
-func utlsConfig(config *tls.Config, addr string) *utls.Config {
+func utlsConfig(config *tls.Config) *utls.Config {
 	if config == nil {
 		config = &tls.Config{}
 	}
 	clone := config.Clone()
-	if clone.ServerName == "" {
-		if host, _, err := net.SplitHostPort(addr); err == nil && net.ParseIP(host) == nil {
-			clone.ServerName = host
-		}
-	}
+
 	return &utls.Config{
 		Time:                        clone.Time,
 		Certificates:                utlsCertificates(clone.Certificates),

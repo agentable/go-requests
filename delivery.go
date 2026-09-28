@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"sync"
 	"time"
 )
 
@@ -101,9 +102,6 @@ func (b *RequestBuilder) compileDeliverySnapshot() (*deliverySnapshot, error) {
 			snap.logger.Errorf("Error preparing request body: %v", err)
 		}
 		return nil, err
-	}
-	if plan.body.form != nil {
-		plan.body.form = plan.body.form.Clone()
 	}
 
 	retryPolicy := snap.retry
@@ -200,11 +198,25 @@ func (s *deliverySnapshot) openDelivery(ctx context.Context) (*openedDelivery, e
 	}, nil
 }
 
+// deliveryBody preserves the original close obligation when middleware replaces
+// or wraps req.Body. Closing a wrapper and then the original releases it once.
+type deliveryBody struct {
+	io.Reader
+	close func() error
+}
+
+func (b *deliveryBody) Close() error { return b.close() }
+
 func (d *openedDelivery) do() (*http.Response, int, error) {
 	attempts := 0
 	req := d.request
 	snap := &d.client
 	ctx := req.Context()
+	var originalBody *deliveryBody
+	if req.Body != nil && req.Body != http.NoBody {
+		originalBody = &deliveryBody{Reader: req.Body, close: sync.OnceValue(req.Body.Close)}
+		req.Body = originalBody
+	}
 
 	finalHandler := MiddlewareHandlerFunc(func(req *http.Request) (*http.Response, error) {
 		retry := d.retryPolicy
@@ -214,7 +226,7 @@ func (d *openedDelivery) do() (*http.Response, int, error) {
 		for attempt := range retry.Max + 1 {
 			if attempt > 0 {
 				if err := resetRequestBody(req); err != nil {
-					return resp, err
+					return nil, err
 				}
 			}
 
@@ -285,8 +297,13 @@ func (d *openedDelivery) do() (*http.Response, int, error) {
 	}
 
 	resp, err := finalHandler(req)
-	if attempts == 0 && req.Body != nil {
-		_ = req.Body.Close() // Match net/http ownership when middleware skips transport delivery.
+	if attempts == 0 {
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+		if originalBody != nil {
+			_ = originalBody.Close()
+		}
 	}
 	return resp, attempts, err
 }

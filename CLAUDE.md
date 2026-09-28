@@ -43,7 +43,7 @@ cd http3 && go test -race ./...
 go-requests/
 ├── client.go        # Client construction, defaults, snapshots, session, profile, and verb helpers
 ├── client_option.go # Functional options for New(...)
-├── transport.go     # Standard transport cloning, HTTP/2, dialing, and connection pools
+├── transport.go     # Standard transport cloning, HTTP/2, dialing, managed TLS handshakes, and pools
 ├── tls.go           # TLS configuration, certificates, and root CAs
 ├── request.go       # RequestBuilder state, URL resolution, and request metadata
 ├── request_metadata.go # Tagged request metadata and occurrence snapshots
@@ -175,11 +175,15 @@ Specification documents in [`SPECS/`](SPECS/) define system contracts, API rules
 - Keep exactly one body selection on `RequestBuilder`; a later body helper replaces earlier body state and its generated media type.
 - Treat `Encoder.Encode` readers and multipart `FilePart.Body` values as read-only borrowed inputs; do not call `Close` based on dynamic type.
 - Treat buffered `Send` response bodies as library-owned and `SendStream` bodies as caller-owned.
+- Close the original materialized request body exactly once when middleware short-circuits before transport delivery, even if middleware replaces the request body.
+- Return no response when retry body replay fails after the retry loop has discarded and closed the prior response.
+- Keep form occurrences as the single source for wire encoding and inspection; preserve each occurrence's disclosure metadata without maintaining a parallel form-value store.
 - Apply root TLS and session options only to `*http.Transport`; fail incompatible transports instead of partially mutating or replacing them.
+- Derive incremental TLS settings and `GetTLSConfig` from the active standard transport; do not retain a parallel TLS configuration after transport replacement. Preserve `tls.Config.Clone` shallow-copy semantics for referenced collaborators.
+- Keep `WithTLSHandshake` as a managed first-hop TLS hook on the standard transport (direct HTTPS or TLS to an HTTPS proxy); use its effective dialer, TLS settings, and handshake timeout, close failed connections, and rebind it for `Client.Clone` and `AsHTTPClient`. Request snapshots reuse the existing transport and pool. Keep uTLS fingerprint implementations in the optional `fingerprint` module.
 - Keep profile behavior client-level; request-local headers and ordered headers override profile defaults.
-- Treat `WithTransport` inputs as borrowed. A caller using a closable transport,
-  including HTTP/3, retains the handle and closes it only after every client,
-  clone, snapshot, and in-flight request using it is done.
+- Clone standard `*http.Transport` inputs to `WithTransport` and `WithHTTPClient`, preserving independent configuration and connection pools without promising deep copies of referenced collaborators. `WithHTTPClient` also copies the client value; apply it before transport-mutating options.
+- Treat custom transports, cookie jars, and callbacks as borrowed collaborators. A caller using a closable custom transport, including HTTP/3, retains the handle and closes it only after every client, clone, snapshot, and in-flight request using it is done.
 - Use versioned names for fixed browser header profiles; keep unversioned names only for dependency-controlled auto profiles.
 - Keep extension modules publishable; do not encode local workspace relationships in extension `go.mod` files.
 - Return errors instead of panicking; preserve context with wrapped errors.

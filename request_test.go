@@ -211,6 +211,102 @@ func TestMiddlewareShortCircuitSendStreamCleanup(t *testing.T) {
 	}
 }
 
+func TestMiddlewareShortCircuitReplacedMultipartBody(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, replacement := range []string{"nil", "empty", "unchanged", "closed"} {
+			for _, result := range []string{"response", "error", "nil"} {
+				t.Run(fmt.Sprintf("stream=%v/%s/%s", stream, replacement, result), func(t *testing.T) {
+					synctest.Test(t, func(t *testing.T) {
+						stopped := errors.New("stopped")
+						var original io.ReadCloser
+						calls := 0
+						client := newTestClient(t, WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+							calls++
+							return nil, errors.New("unexpected transport")
+						})), WithMiddleware(func(MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+							return func(req *http.Request) (*http.Response, error) {
+								original = req.Body
+								switch replacement {
+								case "nil":
+									req.Body = nil
+								case "empty":
+									req.Body = http.NoBody
+								case "closed":
+									_ = req.Body.Close()
+								}
+								switch result {
+								case "response":
+									return &http.Response{StatusCode: 204, Header: http.Header{}, Body: http.NoBody, Request: req}, nil
+								case "error":
+									return nil, stopped
+								default:
+									return nil, nil
+								}
+							}
+						}))
+						b := client.Post("http://example.test").Multipart(NewMultipart().FileString("f", "a.txt", "payload"))
+						var err error
+						if stream {
+							var resp *StreamResponse
+							resp, err = b.SendStream(t.Context())
+							if resp != nil {
+								require.NoError(t, resp.Close())
+							}
+						} else {
+							_, err = b.Send(t.Context())
+						}
+						switch result {
+						case "response":
+							require.NoError(t, err)
+						case "error":
+							assert.ErrorIs(t, err, stopped)
+						default:
+							assert.ErrorIs(t, err, ErrResponseNil)
+						}
+						require.NotNil(t, original)
+						_, readErr := original.Read(make([]byte, 1))
+						_ = original.Close() // Release the producer even when the assertion fails.
+						synctest.Wait()
+						assert.ErrorIs(t, readErr, io.ErrClosedPipe)
+						assert.Zero(t, calls)
+					})
+				})
+			}
+		}
+	}
+}
+
+func TestMiddlewareShortCircuitClosesOriginalOnce(t *testing.T) {
+	for _, mode := range []string{"unchanged", "wrapped", "closed"} {
+		t.Run(mode, func(t *testing.T) {
+			body := &recordingResponseBody{}
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://example.test", body)
+			require.NoError(t, err)
+			wrapperClosed := make(chan struct{}, 2)
+			d := &openedDelivery{request: req, middlewares: []Middleware{
+				func(MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+					return func(req *http.Request) (*http.Response, error) {
+						switch mode {
+						case "wrapped":
+							req.Body = &closeSignalBody{ReadCloser: req.Body, closed: wrapperClosed}
+						case "closed":
+							_ = req.Body.Close()
+						}
+						return nil, nil
+					}
+				},
+			}}
+			_, attempts, err := d.do()
+			require.NoError(t, err)
+			assert.Zero(t, attempts)
+			assert.Equal(t, 1, body.closeCount)
+			if mode == "wrapped" {
+				assert.Len(t, wrapperClosed, 1)
+			}
+		})
+	}
+}
+
 func TestOrderedHeadersAttachMetadataAndApplyHeaders(t *testing.T) {
 	headers := orderedobject.New[[]string]().
 		Set("X-First", []string{"1"}).
@@ -3754,4 +3850,40 @@ func TestDelCookie_EmptyCookies(t *testing.T) {
 
 	// Should remain nil
 	assert.Nil(t, builder.metadata.cookies)
+}
+
+func TestRetryBodyResetFailure(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			replayErr := errors.New("cannot reopen body")
+			responseBody := &recordingResponseBody{data: []byte("retry")}
+			calls := 0
+			client := newTestClient(t,
+				WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					calls++
+					_ = req.Body.Close()
+					return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: http.Header{"Retry-After": {"0"}}, Body: responseBody, Request: req}, nil
+				})),
+				WithMiddleware(func(next MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+					return func(req *http.Request) (*http.Response, error) {
+						req.GetBody = func() (io.ReadCloser, error) { return nil, replayErr }
+						return next(req)
+					}
+				}),
+			)
+			builder := client.Post("http://example.test").Text("payload").Retry(RetryPolicy{Max: 1})
+			if stream {
+				resp, err := builder.SendStream(t.Context())
+				assert.Nil(t, resp)
+				assert.ErrorIs(t, err, replayErr)
+			} else {
+				resp, err := builder.Send(t.Context())
+				assert.Nil(t, resp)
+				assert.ErrorIs(t, err, replayErr)
+			}
+			assert.Equal(t, 1, calls)
+			assert.Equal(t, 1, responseBody.closeCount)
+			assert.Equal(t, len("retry"), responseBody.readBytes)
+		})
+	}
 }

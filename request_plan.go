@@ -287,9 +287,7 @@ func snapshotBuilderMetadata(b *RequestBuilder) requestMetadata {
 
 func cloneRequestBodyPlan(body requestBodyPlan) requestBodyPlan { //nolint:gocritic // Cloning preserves value-like plan semantics while copying owned bytes.
 	clone := body
-	// Form values remain a borrowed delivery source in shared facts. A
-	// delivery-bound compile clones the container after static validation;
-	// Prepare rebuilds all-public bytes from tagged occurrences instead.
+	// Form strings and tags are owned together by the detached plan.
 	clone.formOccurrences = slices.Clone(body.formOccurrences)
 	// PublicPayload is an owned capability. A private legacy byte slice stays
 	// borrowed so compile does not duplicate undisclosed source bytes.
@@ -329,9 +327,6 @@ func validateDeliveryStaticFacts(body requestBodyPlan, headers http.Header) erro
 		}
 		return nil
 	case requestBodyForm:
-		if body.form == nil {
-			return previewInvalidBodyError()
-		}
 		return nil
 	default:
 		return previewInvalidBodyError()

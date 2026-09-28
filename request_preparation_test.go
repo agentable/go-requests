@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -740,4 +741,59 @@ type parityCountingReader struct {
 func (r *parityCountingReader) Read([]byte) (int, error) {
 	r.reads.Add(1)
 	return 0, io.EOF
+}
+
+func TestRequestPreparationFormMatchesDelivery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.Copy(w, r.Body) }))
+	defer server.Close()
+	client := newTestClient(t)
+	tests := []struct {
+		name   string
+		build  func(*RequestBuilder) *RequestBuilder
+		want   string
+		public bool
+	}{
+		{"repeated", func(b *RequestBuilder) *RequestBuilder {
+			return b.FormFieldValue("z", Public("space value")).FormFieldValue("a", Public("")).FormFieldValue("a", Public("two"))
+		}, "a=&a=two&z=space+value", true},
+		{"mixed", func(b *RequestBuilder) *RequestBuilder {
+			return b.FormFieldValue("a", Public("one")).FormFields(map[string]string{"b": "secret"})
+		}, "a=one&b=secret", false},
+		{"delete private", func(b *RequestBuilder) *RequestBuilder {
+			return b.Form(url.Values{"secret": {"one"}, "absent": nil}).DelFormField("secret").FormFieldValue("a", Public("two"))
+		}, "a=two", true},
+		{"empty", func(b *RequestBuilder) *RequestBuilder { return b.Form(nil) }, "", false},
+		{"delete all", func(b *RequestBuilder) *RequestBuilder { return b.FormFieldValue("a", Public("one")).DelFormField("a") }, "", false},
+		{"replace", func(b *RequestBuilder) *RequestBuilder {
+			return b.FormFieldValue("old", Public("one")).Text("discard").FormFieldValue("new", Public("two"))
+		}, "new=two", true},
+		{"input snapshot", func(b *RequestBuilder) *RequestBuilder {
+			values := url.Values{"a": {"old", ""}, "absent": nil}
+			b.Form(values)
+			values["a"][0] = "changed"
+			return b
+		}, "a=old&a=", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			b := test.build(client.Post(server.URL))
+			prepared, err := b.Prepare(t.Context(), PrepareOptions{MaxPreparedBodyBytes: int64(len(test.want))})
+			require.NoError(t, err)
+			if test.public {
+				assert.Equal(t, test.want, string(prepared.Body().Data().Bytes()))
+				assert.Equal(t, PreparedValuePresent, prepared.Body().Data().State())
+				_, err = b.Prepare(t.Context(), PrepareOptions{MaxPreparedBodyBytes: int64(len(test.want) - 1)})
+				assert.ErrorIs(t, err, ErrPreparationBodyTooLarge)
+			} else {
+				assert.Equal(t, PreparedValueRedacted, prepared.Body().Data().State())
+			}
+			resp, err := b.Send(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, test.want, resp.String())
+			b.FormField("later", "private")
+			if test.public {
+				assert.Equal(t, test.want, string(prepared.Body().Data().Bytes()))
+			}
+		})
+	}
 }

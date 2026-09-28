@@ -1,5 +1,5 @@
-github.com/agentable/go-orderedobject v0.3.0 h1:7j7qKnfhVscM7BgS6cbBeRCu8KmlV9fCFuRcsFIO8Ho=
-github.com/agentable/go-orderedobject v0.3.0/go.mod h1:dfHQIVTnx+D7uab3hwyZH1BjUGpXeaDJwKbq62skOgs=
+github.com/agentable/go-orderedobject v0.3.1 h1:rDUwRG62h2HaXfCruqk0VIOVzZpDWJ0NFL/Iim88KZ0=
+github.com/agentable/go-orderedobject v0.3.1/go.mod h1:dfHQIVTnx+D7uab3hwyZH1BjUGpXeaDJwKbq62skOgs=
 github.com/goccy/go-yaml v1.19.2 h1:PmFC1S6h8ljIz6gMRBopkjP1TVT7xuwrButHID66PoM=
 github.com/goccy/go-yaml v1.19.2/go.mod h1:XBurs7gK8ATbW4ZPGKgcbrY1Br56PdM69F7LkFRi1kA=
 github.com/google/go-cmp v0.6.0/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=

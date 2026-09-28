@@ -3,6 +3,7 @@ package requests
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -694,9 +695,9 @@ func TestNew_WithClientCertificateAndTLSServerName(t *testing.T) {
 		WithClientCertificate(testCertificatePath, testPrivateKeyPath),
 		WithTLSServerName("example.com"),
 	)
-	require.NotNil(t, c.tlsConfig)
-	assert.Len(t, c.tlsConfig.Certificates, 1)
-	assert.Equal(t, "example.com", c.tlsConfig.ServerName)
+	require.NotNil(t, c.GetTLSConfig())
+	assert.Len(t, c.GetTLSConfig().Certificates, 1)
+	assert.Equal(t, "example.com", c.GetTLSConfig().ServerName)
 }
 
 func TestNew_WithCertificatesAndRootCertificates(t *testing.T) {
@@ -710,9 +711,9 @@ func TestNew_WithCertificatesAndRootCertificates(t *testing.T) {
 		WithRootCertificate(testCertificatePath),
 		WithRootCertificateFromString(string(rootPEM)),
 	)
-	require.NotNil(t, c.tlsConfig)
-	assert.Len(t, c.tlsConfig.Certificates, 1)
-	assert.NotNil(t, c.tlsConfig.RootCAs)
+	require.NotNil(t, c.GetTLSConfig())
+	assert.Len(t, c.GetTLSConfig().Certificates, 1)
+	assert.NotNil(t, c.GetTLSConfig().RootCAs)
 }
 
 func TestNew_WithCertificatesCapturesMutableMetadata(t *testing.T) {
@@ -1242,8 +1243,8 @@ func TestNew_RejectsNilCookieJar(t *testing.T) {
 func TestNew_WithSession(t *testing.T) {
 	c := newTestClient(t, WithSession())
 	require.NotNil(t, c.httpClient.Jar)
-	require.NotNil(t, c.tlsConfig)
-	assert.NotNil(t, c.tlsConfig.ClientSessionCache)
+	require.NotNil(t, c.GetTLSConfig())
+	assert.NotNil(t, c.GetTLSConfig().ClientSessionCache)
 }
 
 func TestEnableSessionPreservesExistingSessionStores(t *testing.T) {
@@ -1257,7 +1258,7 @@ func TestEnableSessionPreservesExistingSessionStores(t *testing.T) {
 	require.NoError(t, c.enableSession())
 
 	assert.Equal(t, jar, c.httpClient.Jar)
-	assert.Equal(t, cache, c.tlsConfig.ClientSessionCache)
+	assert.Equal(t, cache, c.GetTLSConfig().ClientSessionCache)
 }
 
 func TestNew_WithHTTP2(t *testing.T) {
@@ -1371,4 +1372,109 @@ func TestNew_WithAuth(t *testing.T) {
 	resp, err := c.Get("/").Send(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode())
+}
+
+func TestNew_WithHTTPClientIsolatesOptions(t *testing.T) {
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	otherJar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	redirectErr := errors.New("original redirect")
+	input := &http.Client{Timeout: time.Second, Jar: jar, Transport: &http.Transport{MaxIdleConns: 7}, CheckRedirect: func(*http.Request, []*http.Request) error { return redirectErr }}
+	first := newTestClient(t, WithHTTPClient(input))
+	second := newTestClient(t, WithHTTPClient(input), WithTimeout(2*time.Second), WithCookieJar(otherJar), WithRedirectPolicy(NewProhibitRedirectPolicy()), WithMaxIdleConns(11))
+	for _, hc := range []*http.Client{input, first.AsHTTPClient()} {
+		assert.Equal(t, time.Second, hc.Timeout)
+		assert.Same(t, jar, hc.Jar)
+		assert.ErrorIs(t, hc.CheckRedirect(nil, nil), redirectErr)
+		assert.Equal(t, 7, hc.Transport.(*http.Transport).MaxIdleConns)
+	}
+	assert.Equal(t, 2*time.Second, second.AsHTTPClient().Timeout)
+	assert.Same(t, otherJar, second.AsHTTPClient().Jar)
+	u, err := url.Parse("https://example.test")
+	require.NoError(t, err)
+	jar.SetCookies(u, []*http.Cookie{{Name: "shared", Value: "yes"}})
+	cookies := first.AsHTTPClient().Jar.Cookies(u)
+	if assert.Len(t, cookies, 1) {
+		assert.Equal(t, "yes", cookies[0].Value)
+	}
+	_, err = New(WithHTTPClient(input), WithTimeout(3*time.Second), WithMaxIdleConns(99), WithBaseURL("invalid"))
+	require.Error(t, err)
+	assert.Equal(t, time.Second, input.Timeout)
+	assert.Equal(t, 7, input.Transport.(*http.Transport).MaxIdleConns)
+}
+
+func TestEffectiveTLSFromInjectedTransport(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer server.Close()
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	cache := tls.NewLRUClientSessionCache(1)
+	var verified atomic.Int32
+	cfg := &tls.Config{RootCAs: roots, ClientSessionCache: cache, VerifyConnection: func(tls.ConnectionState) error { verified.Add(1); return nil }}
+	for _, injection := range []string{"transport", "client"} {
+		for _, extra := range []string{"none", "session", "http2"} {
+			t.Run(injection+"/"+extra, func(t *testing.T) {
+				transport := &http.Transport{TLSClientConfig: cfg}
+				opt := WithTransport(transport)
+				if injection == "client" {
+					opt = WithHTTPClient(&http.Client{Transport: transport})
+				}
+				opts := []Option{opt}
+				switch extra {
+				case "session":
+					opts = append(opts, WithSession())
+				case "http2":
+					opts = append(opts, WithHTTP2())
+				}
+				client := newTestClient(t, opts...)
+				defer client.UnsafeHTTPClient().CloseIdleConnections()
+				clone, err := client.Clone(WithTLSServerName(server.Certificate().DNSNames[0]))
+				require.NoError(t, err)
+				defer clone.UnsafeHTTPClient().CloseIdleConnections()
+				_, err = clone.Get(server.URL).Send(t.Context())
+				assert.NoError(t, err)
+				got := client.GetTLSConfig()
+				require.NotNil(t, got)
+				assert.Same(t, roots, got.RootCAs)
+				assert.Same(t, cache, got.ClientSessionCache)
+				assert.NotNil(t, got.VerifyConnection)
+				assert.NotSame(t, got, client.UnsafeHTTPClient().Transport.(*http.Transport).TLSClientConfig)
+				got.ServerName = "changed"
+				assert.Empty(t, client.GetTLSConfig().ServerName)
+			})
+		}
+	}
+	assert.Positive(t, verified.Load())
+}
+
+func TestEffectiveTLSReplacementAndClearing(t *testing.T) {
+	first := &tls.Config{ServerName: "first"}
+	second := &http.Transport{TLSClientConfig: &tls.Config{ServerName: "second"}}
+	client := newTestClient(t, WithTLSConfig(first), WithTransport(second))
+	assert.Equal(t, "second", client.GetTLSConfig().ServerName)
+	clone, err := client.Clone()
+	require.NoError(t, err)
+	assert.Equal(t, "second", clone.GetTLSConfig().ServerName)
+	snapshot := client.AsHTTPClient().Transport.(*http.Transport)
+	assert.Equal(t, "second", snapshot.TLSClientConfig.ServerName)
+	snapshot.TLSClientConfig.ServerName = "snapshot"
+	assert.Equal(t, "second", client.GetTLSConfig().ServerName)
+	cleared := newTestClient(t, WithTransport(second), WithTLSConfig(nil))
+	assert.Nil(t, cleared.GetTLSConfig())
+	assert.Nil(t, cleared.UnsafeHTTPClient().Transport.(*http.Transport).TLSClientConfig)
+	custom := newTestClient(t, WithTLSConfig(first), WithTransport(testRoundTripperFunc(func(*http.Request) (*http.Response, error) { return nil, assert.AnError })))
+	assert.Nil(t, custom.GetTLSConfig())
+}
+
+func TestNew_WithHTTPClientRejectsTypedNilTransport(t *testing.T) {
+	var standard *http.Transport
+	var custom *testRoundTripperFunc
+	for _, transport := range []http.RoundTripper{standard, custom} {
+		t.Run(fmt.Sprintf("%T", transport), func(t *testing.T) {
+			client, err := New(WithHTTPClient(&http.Client{Transport: transport}))
+			assert.Nil(t, client)
+			assert.ErrorIs(t, err, ErrInvalidConfigValue)
+		})
+	}
 }
