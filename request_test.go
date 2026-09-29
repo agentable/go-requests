@@ -1508,6 +1508,93 @@ func TestRequestPreviewDoesNotEnterDeliveryCollaborators(t *testing.T) {
 	assert.Empty(t, logger.Infos)
 }
 
+func TestRequestPreparationDoesNotEnterDeliveryCollaborators(t *testing.T) {
+	var transportCalls atomic.Int64
+	var middlewareCalls atomic.Int64
+	var jarCalls atomic.Int64
+	var retryCalls atomic.Int64
+	var backoffCalls atomic.Int64
+	var redirectCalls atomic.Int64
+	var proxyCalls atomic.Int64
+	var loggerCalls atomic.Int64
+
+	proxySelector := func(*http.Request) (*url.URL, error) {
+		proxyCalls.Add(1)
+		return nil, errors.New("proxy selector must not run")
+	}
+	client := newTestClient(t,
+		WithCookieJar(&previewCookieJar{calls: &jarCalls}),
+		WithLogger(&requestPreparationCountingLogger{calls: &loggerCalls}),
+		WithMiddleware(func(next MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+			return func(req *http.Request) (*http.Response, error) {
+				middlewareCalls.Add(1)
+				return next(req)
+			}
+		}),
+		WithRetry(RetryPolicy{
+			Max: 1,
+			Backoff: func(int) time.Duration {
+				backoffCalls.Add(1)
+				return 0
+			},
+			ShouldRetry: func(*http.Request, *http.Response, error) bool {
+				retryCalls.Add(1)
+				return true
+			},
+		}),
+		WithRedirectPolicy(&previewRedirectPolicy{calls: &redirectCalls}),
+		WithProxySelector(proxySelector),
+	)
+
+	transport := client.httpClient.Transport.(*http.Transport)
+	client.httpClient.Transport = testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		transportCalls.Add(1)
+		return transport.RoundTrip(req)
+	})
+	builder := client.Post("https://example.test").BytesPayload(PublicPayload([]byte("payload")))
+	builder.AddMiddleware(func(next MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+		return func(req *http.Request) (*http.Response, error) {
+			middlewareCalls.Add(1)
+			return next(req)
+		}
+	})
+
+	resetCalls := func() {
+		transportCalls.Store(0)
+		middlewareCalls.Store(0)
+		jarCalls.Store(0)
+		retryCalls.Store(0)
+		backoffCalls.Store(0)
+		redirectCalls.Store(0)
+		proxyCalls.Store(0)
+		loggerCalls.Store(0)
+	}
+	assertNoCalls := func() {
+		assert.Zero(t, transportCalls.Load())
+		assert.Zero(t, middlewareCalls.Load())
+		assert.Zero(t, jarCalls.Load())
+		assert.Zero(t, retryCalls.Load())
+		assert.Zero(t, backoffCalls.Load())
+		assert.Zero(t, redirectCalls.Load())
+		assert.Zero(t, proxyCalls.Load())
+		assert.Zero(t, loggerCalls.Load())
+	}
+
+	resetCalls()
+	preparation, err := builder.Prepare(t.Context(), PrepareOptions{MaxPreparedBodyBytes: 7})
+	require.NoError(t, err)
+	require.NotNil(t, preparation)
+	assert.Equal(t, PreparedValuePresent, preparation.Body().Data().State())
+	assert.Equal(t, []byte("payload"), preparation.Body().Data().Bytes())
+	assertNoCalls()
+
+	resetCalls()
+	preparation, err = builder.Prepare(t.Context(), PrepareOptions{MaxPreparedBodyBytes: 6})
+	assert.Nil(t, preparation)
+	assert.ErrorIs(t, err, ErrPreparationBodyTooLarge)
+	assertNoCalls()
+}
+
 type previewCookieJar struct {
 	calls *atomic.Int64
 }
@@ -1529,6 +1616,15 @@ func (p *previewRedirectPolicy) Apply(*http.Request, []*http.Request) error {
 	p.calls.Add(1)
 	return nil
 }
+
+type requestPreparationCountingLogger struct {
+	calls *atomic.Int64
+}
+
+func (l *requestPreparationCountingLogger) Debugf(string, ...any) { l.calls.Add(1) }
+func (l *requestPreparationCountingLogger) Infof(string, ...any)  { l.calls.Add(1) }
+func (l *requestPreparationCountingLogger) Warnf(string, ...any)  { l.calls.Add(1) }
+func (l *requestPreparationCountingLogger) Errorf(string, ...any) { l.calls.Add(1) }
 
 func TestRequestPreviewLeavesBuilderUsableForIndependentSend(t *testing.T) {
 	var received string

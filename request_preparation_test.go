@@ -72,6 +72,41 @@ func TestRequestPreparationPublicFormEncodingOrder(t *testing.T) {
 	assert.Equal(t, []byte("empty="), publicEmpty.Body().Data().Bytes())
 }
 
+func TestRequestPreparationPublicFormBudgetSemantics(t *testing.T) {
+	invalidUTF8 := string([]byte{0xff, 0xfe})
+	values := url.Values{
+		"":        {""},
+		"empty":   {""},
+		"special": {"space + % & / \x00 雪 " + invalidUTF8, "second"},
+		"unicode": {"中文"},
+	}
+	expected := values.Encode()
+
+	builder := newTestClient(t).Post("https://example.test").
+		FormFieldValue("special", Public("space + % & / \x00 雪 "+invalidUTF8)).
+		FormFieldValue("unicode", Public("中文")).
+		FormFieldValue("special", Public("second")).
+		FormFieldValue("", Public(""))
+	builder.FormFieldValue("empty", Public(""))
+
+	preparation, err := builder.Prepare(t.Context(), PrepareOptions{MaxPreparedBodyBytes: int64(len(expected))})
+	require.NoError(t, err)
+	assert.Equal(t, []byte(expected), preparation.Body().Data().Bytes())
+
+	_, err = builder.Prepare(t.Context(), PrepareOptions{MaxPreparedBodyBytes: int64(len(expected) - 1)})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrPreparationBodyTooLarge)
+	assert.NotContains(t, err.Error(), invalidUTF8)
+
+	mixed, err := newTestClient(t).Post("https://example.test").
+		FormFieldValue("public", Public("visible")).
+		FormField("private", "canary-secret").
+		Prepare(t.Context(), PrepareOptions{MaxPreparedBodyBytes: 1 << 20})
+	require.NoError(t, err)
+	assert.Equal(t, PreparedValueRedacted, mixed.Body().Data().State())
+	assert.NotContains(t, string(mixed.Body().Data().Bytes()), "canary-secret")
+}
+
 func TestRequestPreparationCredentialHeadersStayPrivate(t *testing.T) {
 	preparation, err := newTestClient(t).Post("https://example.test").
 		HeaderValue("Authorization", Public("Bearer fake")).
@@ -261,6 +296,20 @@ func TestRequestPreparationDetachedNestedValues(t *testing.T) {
 	assert.Equal(t, "header", preparation.Headers()[0].Values()[0].Value())
 	assert.Equal(t, "cookie-value", preparation.Cookies()[0].Value().Value())
 	assert.Equal(t, []byte("body"), preparation.Body().Data().Bytes())
+}
+
+func TestRequestPreparationBudgetFailureDoesNotChangePublicBytes(t *testing.T) {
+	const approved = "approved bytes"
+	builder := newTestClient(t).Post("https://example.test").
+		BytesPayload(PublicPayload([]byte(approved)))
+
+	_, err := builder.Prepare(t.Context(), PrepareOptions{MaxPreparedBodyBytes: int64(len(approved) - 1)})
+	assert.ErrorIs(t, err, ErrPreparationBodyTooLarge)
+
+	preparation, err := builder.Prepare(t.Context(), PrepareOptions{MaxPreparedBodyBytes: int64(len(approved))})
+	require.NoError(t, err)
+	assert.Equal(t, PreparedValuePresent, preparation.Body().Data().State())
+	assert.Equal(t, []byte(approved), preparation.Body().Data().Bytes())
 }
 
 func TestRequestPreparationMultipartWalkerContext(t *testing.T) {

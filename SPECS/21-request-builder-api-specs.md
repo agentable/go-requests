@@ -152,10 +152,16 @@ func (b *RequestBuilder) Prepare(
 `MaxPreparedBodyBytes` MUST be non-negative; zero means that no body bytes may be
 retained, and there is no unbounded preparation mode. The budget applies only to
 bytes retained in a present `PreparedBody.Data`: public Text/Bytes with known
-size are rejected before inspection when over the limit; an all-public form uses
-the existing `url.Values.Encode` ordering and rejects the encoded result when its
-length exceeds the retained budget. The budget is not a transient-allocation
-limit. Legacy/private/redacted bodies and typed
+size are rejected before inspection when over the limit. For an all-public form,
+Prepare first computes an overflow-safe raw-byte lower bound from each occurrence
+(`name` bytes + `=` + `value` bytes, plus `&` between occurrences). When that
+lower bound already exceeds the budget, Prepare returns
+`ErrPreparationBodyTooLarge` before calling `url.Values.Encode`. Otherwise the
+standard library remains the only final encoder: its existing ordering and
+escaping are used, and the encoded result is rejected if its length exceeds the
+retained budget. The lower bound does not account for escaping expansion, so the
+final retained-byte check remains mandatory. The budget is not a
+transient-allocation limit. Legacy/private/redacted bodies and typed
 JSON/XML/YAML bodies are never opened or encoded and do not consume this retained
 byte budget, and multipart manifest metadata is not body data. The first version
 has no unknown-size retained body source; opaque readers remain structural and
@@ -385,10 +391,11 @@ not sent to an HTTP server.
 
 Prepare checks the caller context after retained builder errors and before doing
 projection work, and checks it between bounded projection loops. It does not
-inherit request-local delivery timeout, create a child context, or retain a
-cancel handle: a synchronous in-memory projection cannot be interrupted by a
-deadline, while `MaxPreparedBodyBytes` is its explicit retained-result bound.
-Context cancellation preserves the standard cancellation/deadline classifications.
+inherit request-local delivery timeout or create a child context. Cancellation
+and deadline expiration are observed only at explicit context checkpoints, so
+they do not asynchronously preempt synchronous in-memory projection.
+`MaxPreparedBodyBytes` is the explicit retained-result bound. Observed context
+errors preserve the standard cancellation/deadline classifications.
 Prepare-specific inspection failures
 use three classifications: `ErrPreparationInvalidBudget`,
 `ErrPreparationNotPreparable`, and `ErrPreparationBodyTooLarge`. Eligibility is
@@ -464,7 +471,7 @@ from the existing policy-result type `PreviewValue`.
 Legacy entries remain valid and default to Private. Capability values have
 private fields, a private zero value, no raw accessor, no `Reveal`, and no
 value-revealing formatter or serializer; any default formatting path uses only a
-fixed disclosure-safe marker. `PublicPayload` clones caller bytes. Repeated owner
+fixed disclosure-safe marker. `PublicPayload` copies caller bytes. Repeated owner
 values are expressed by repeated single-value calls; this version does not add
 map-based capability carriers. `GetBaseURL`, `WithBaseURL`, absolute URL
 resolution, and all existing verb helpers remain unchanged. Base URL disclosure,
@@ -478,8 +485,9 @@ entry just as `PathParam` does;
 `HeaderValue` replaces the request-local header name and `AddHeaderValue`
 appends within that name. Cookie occurrences still follow the existing
 client/request precedence and same-name merge rules. `TextValue` and
-`BytesPayload` replace the current body selection with owned in-memory data;
-typed JSON/XML/YAML methods are intentionally absent. All owner header mutations
+`BytesPayload` replace the current body selection with builder-owned in-memory
+data; `BytesPayload` copies the supplied payload bytes into that storage. Typed
+JSON/XML/YAML methods are intentionally absent. All owner header mutations
 update ordered-header intent using the same synchronization rules as their legacy
 counterparts.
 

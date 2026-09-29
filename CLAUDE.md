@@ -83,10 +83,11 @@ The root module is `github.com/agentable/go-requests`. Extension modules are ind
 - Prove behavior with focused tests first, then run the smallest wider gate that covers the changed surface.
 - Do not create policy-only scripts or tests that merely mirror SPECS without proving runtime behavior.
 - Keep `RequestBuilder.Preview` as one detached, structural-only projection; read `SPECS/21-request-builder-api-specs.md` before changing its contract.
-- Keep `RequestBuilder.Prepare` as a separate sanitized no-send projection; read `SPECS/21-request-builder-api-specs.md` and `SPECS/31-public-surface-decisions.md` before changing its public contract.
+- Keep `RequestBuilder.Prepare` as a separate sanitized no-send projection; use `SPECS/21-request-builder-api-specs.md` and `SPECS/31-public-surface-decisions.md` for its disclosure, body-source, and retained-byte contract.
 - Keep Preview out of delivery: it must not invoke middleware, transport, auth, encoders, readers, multipart producers, request serialization, or logging.
-- Keep `RequestBuilder.Prepare` separate from Preview and delivery: only explicitly owner-approved, eligible body bytes may be retained in `PreparedBody.Data` under `MaxPreparedBodyBytes`; metadata follows the disclosure policy separately. It returns a detached sanitized DTO, never a raw/sendable request or a reveal switch.
-- Prepare never encodes typed JSON/XML/YAML, reads or closes opaque readers, or opens/reads/closes borrowed multipart parts. Its body-byte budget limits retained result bytes, not transient or total process memory.
+- Keep `RequestBuilder.Prepare` separate from Preview and delivery. It returns a detached sanitized DTO, never a raw/sendable request or a reveal switch.
+- Keep Prepare non-consuming: do not encode typed JSON/XML/YAML, read opaque readers, or open/read/close borrowed multipart parts. Its budget limits retained `PreparedBody.Data`, not transient or total process memory.
+- Treat `PublicPayload` and `BytesPayload` as ownership boundaries: caller bytes are copied into builder-owned body data. Request exits may read selected body bytes but must not mutate them; delivery materializes a separate replayable body.
 - Callers must not concurrently mutate a builder or its referenced mutable/borrowed inputs while any request exit is running.
 - Fail loudly with returned errors; do not hide invalid construction in logs or request-time surprises.
 
@@ -114,6 +115,7 @@ Reference projects:
 | [`.references/req`](.references/req/) | Browser impersonation, ordered headers, transport and response behavior comparison |
 | [`.references/resty`](.references/resty/) | Fluent client ergonomics, middleware, retries, multipart, streaming, and API tradeoff comparison |
 | [`.references/go-retryablehttp`](.references/go-retryablehttp/) | Focused retry loop and backoff behavior comparison |
+| [`.references/lathe`](.references/lathe/) | Client no-send flow, shared request preparation, and sanitized request projection; do not copy its callback or file-read side effects into `Preview`/`Prepare` |
 
 ### Implementation Phase — Respect Module Boundaries
 

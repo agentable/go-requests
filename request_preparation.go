@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"math"
 	"net/url"
 	"slices"
 	"strings"
@@ -790,11 +791,22 @@ func projectPreparedBody(ctx context.Context, body requestBodyPlan, budget int64
 			return PreparedBody{}, err
 		}
 		values := make(url.Values, len(body.formOccurrences))
+		var lowerBound int64
 		for i, occurrence := range body.formOccurrences {
 			if i%64 == 0 {
 				if err := preparationCheckpoint(ctx); err != nil {
 					return PreparedBody{}, err
 				}
+			}
+			exceedsBudget := i > 0 && addPreparedFormLength(&lowerBound, 1, budget)
+			exceedsBudget = exceedsBudget || addPreparedFormLength(&lowerBound, int64(len(occurrence.name)), budget)
+			exceedsBudget = exceedsBudget || addPreparedFormLength(&lowerBound, 1, budget)
+			exceedsBudget = exceedsBudget || addPreparedFormLength(&lowerBound, int64(len(occurrence.value.rawValue())), budget)
+			if exceedsBudget {
+				if err := preparationCheckpoint(ctx); err != nil {
+					return PreparedBody{}, err
+				}
+				return PreparedBody{}, ErrPreparationBodyTooLarge
 			}
 			values.Add(occurrence.name, occurrence.value.rawValue())
 		}
@@ -811,6 +823,14 @@ func projectPreparedBody(ctx context.Context, body requestBodyPlan, budget int64
 		result.multipart = manifest
 	}
 	return result, nil
+}
+
+func addPreparedFormLength(total *int64, part, budget int64) bool {
+	if part < 0 || *total > math.MaxInt64-part {
+		return true
+	}
+	*total += part
+	return *total > budget
 }
 
 func preparedFormAllPublic(ctx context.Context, occurrences []requestBodyFormOccurrence) (bool, error) {

@@ -208,6 +208,12 @@ func TestRequestPreparationBudgetAndZeroDelivery(t *testing.T) {
 	assert.ErrorIs(t, err, requests.ErrPreparationBodyTooLarge)
 	assert.Zero(t, transportCalls.Load())
 
+	_, err = client.Post("https://example.test").
+		FormFieldValue("payload", requests.Public(strings.Repeat("x", 4096))).
+		Prepare(t.Context(), requests.PrepareOptions{MaxPreparedBodyBytes: 1})
+	assert.ErrorIs(t, err, requests.ErrPreparationBodyTooLarge)
+	assert.Zero(t, transportCalls.Load())
+
 	preparation, err := client.Post("https://example.test").TextValue(requests.Public("")).
 		Prepare(t.Context(), requests.PrepareOptions{MaxPreparedBodyBytes: 0})
 	require.NoError(t, err)

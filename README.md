@@ -318,6 +318,10 @@ approved := requests.PublicPayload([]byte(`{"title":"approved"}`))
 builder := client.Post("/articles").BytesPayload(approved)
 ```
 
+`PublicPayload` copies the supplied slice, and `BytesPayload` stores a
+builder-owned copy. Mutating the original slice after either call does not
+change the selected body.
+
 The other owner-aware setters (`PathValue`, `HeaderValue`,
 `AddHeaderValue`, `CookieValue`, and `FormFieldValue`) use the same explicit
 disclosure rule. `PathValue` can disclose only the complete resolved pathname;
@@ -336,10 +340,15 @@ is reported structurally with redacted data and is not read, sought, or closed.
 Multipart preparation returns a structural manifest with redacted values; it
 does not create a boundary or read a part. `MaxPreparedBodyBytes` limits only
 bytes retained in `PreparedBody.Data`; it is not a total-memory or
-transient-allocation limit. For example, form encoding may allocate its encoded
-result before Prepare checks it against the budget, and allocations made before
-the caller hands data to `PublicPayload` are outside the limit. Call `Send` or
-`SendStream` separately when delivery is wanted.
+transient-allocation limit. For an all-public URL-encoded form, Prepare first
+computes an overflow-safe raw-byte lower bound. If that lower bound proves the
+form is over budget, it returns `ErrPreparationBodyTooLarge` before calling
+`url.Values.Encode`; otherwise the standard library performs the final sorted,
+escaped encoding and the retained-byte check still applies. Because escaping
+can expand a value beyond the lower bound, this optimization does not remove
+that final check. Allocations made before the caller hands data to
+`PublicPayload` are also outside the limit. Call `Send` or `SendStream`
+separately when delivery is wanted.
 
 ### Ordered headers
 

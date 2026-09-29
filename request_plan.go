@@ -1,7 +1,6 @@
 package requests
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -285,19 +284,14 @@ func snapshotBuilderMetadata(b *RequestBuilder) requestMetadata {
 	return b.metadata.clone()
 }
 
-func cloneRequestBodyPlan(body requestBodyPlan) requestBodyPlan { //nolint:gocritic // Cloning preserves value-like plan semantics while copying owned bytes.
+func cloneRequestBodyPlan(body requestBodyPlan) requestBodyPlan { //nolint:gocritic // Cloning preserves structural value semantics while payload bytes stay borrowed.
 	clone := body
 	// Form values remain a borrowed delivery source in shared facts. A
 	// delivery-bound compile clones the container after static validation;
 	// Prepare rebuilds all-public bytes from tagged occurrences instead.
 	clone.formOccurrences = slices.Clone(body.formOccurrences)
-	// PublicPayload is an owned capability. A private legacy byte slice stays
-	// borrowed so compile does not duplicate undisclosed source bytes.
-	if body.kind == requestBodyBytes && body.valuePublic {
-		if value, ok := body.value.([]byte); ok {
-			clone.value = bytes.Clone(value)
-		}
-	}
+	// PublicPayload bytes remain builder-owned and are read-only in the shared plan.
+	// Delivery reads them at materialization and creates a replayable body copy.
 	return clone
 }
 
