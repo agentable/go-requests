@@ -4,3 +4,6 @@
 [submodule ".references/resty"]
 	path = .references/resty
 	url = https://github.com/go-resty/resty.git
+[submodule ".references/lathe"]
+	path = .references/lathe
+	url = https://github.com/lathe-cli/lathe.git
