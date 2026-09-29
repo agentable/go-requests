@@ -3,17 +3,17 @@ module github.com/agentable/go-requests
 go 1.27.0
 
 require (
-	github.com/agentable/go-orderedobject v0.2.8
+	github.com/agentable/go-orderedobject v0.3.1
 	github.com/goccy/go-yaml v1.19.2
 	github.com/google/go-cmp v0.7.0
 	github.com/google/go-querystring v1.2.0
 	github.com/stretchr/testify v1.12.1
 	github.com/test-go/testify v1.1.4
 	github.com/valyala/bytebufferpool v1.0.0
-	golang.org/x/net v0.58.0
+	golang.org/x/net v0.59.0
 )
 
 require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 )

@@ -12,14 +12,14 @@ import (
 	"golang.org/x/net/http2"
 )
 
-func cloneHTTPClient(client *http.Client, tlsConfig *tls.Config) *http.Client {
+func cloneHTTPClient(client *http.Client, handshake tlsHandshakeFunc) *http.Client {
 	clone := *client
 	if transport, ok := client.Transport.(*http.Transport); ok {
-		clonedTransport := transport.Clone()
-		if tlsConfig != nil {
-			clonedTransport.TLSClientConfig = tlsConfig
+		copied := transport.Clone()
+		if handshake != nil {
+			bindTLSHandshake(copied, handshake)
 		}
-		clone.Transport = clonedTransport
+		clone.Transport = copied
 	}
 	return &clone
 }
@@ -46,7 +46,8 @@ func (c *Client) setHTTPClient(httpClient *http.Client) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.httpClient = httpClient
+	c.httpClient = cloneHTTPClient(httpClient, nil)
+	c.tlsHandshake = nil
 }
 
 // setDefaultTransport replaces the underlying transport.
@@ -54,7 +55,11 @@ func (c *Client) setDefaultTransport(transport http.RoundTripper) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if standard, ok := transport.(*http.Transport); ok {
+		transport = standard.Clone()
+	}
 	c.httpClient.Transport = transport
+	c.tlsHandshake = nil
 }
 
 func (c *Client) configureHTTP2() error {
@@ -69,9 +74,6 @@ func (c *Client) enableHTTP2Locked() error {
 	if err != nil {
 		return err
 	}
-	if c.tlsConfig != nil {
-		transport.TLSClientConfig = c.tlsConfig
-	}
 	return configureHTTP2Transport(transport)
 }
 
@@ -82,8 +84,14 @@ func configureHTTP2Transport(transport *http.Transport) error {
 		return nil
 	}
 
+	if transport.Protocols == nil {
+		transport.Protocols = new(http.Protocols)
+		transport.Protocols.SetHTTP1(true)
+	}
+	transport.Protocols.SetHTTP2(true)
+	ensureHTTP2NextProtos(transport)
 	transport.ForceAttemptHTTP2 = true
-	return http2.ConfigureTransport(transport)
+	return nil
 }
 
 func isHTTP2Configured(transport *http.Transport) bool {
@@ -191,4 +199,67 @@ func (c *Client) applyLocalAddr(addr net.Addr) error {
 	}
 	c.applyDialContextLocked(transport)
 	return nil
+}
+
+type tlsHandshakeFunc func(context.Context, net.Conn, *tls.Config) (net.Conn, error)
+
+func (c *Client) setTLSHandshake(handshake tlsHandshakeFunc) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	transport, err := c.ensureTransport()
+	if err != nil {
+		return err
+	}
+	c.tlsHandshake = handshake
+	bindTLSHandshake(transport, handshake)
+	return nil
+}
+
+func bindTLSHandshake(transport *http.Transport, handshake tlsHandshakeFunc) {
+	transport.DialTLS = nil //nolint:staticcheck // Clearing both hooks prevents fallback to an old TLS dialer.
+	transport.DialTLSContext = nil
+	if handshake == nil {
+		return
+	}
+	transport.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dial := transport.DialContext
+		legacyDial := transport.Dial //nolint:staticcheck // Preserve net/http dial precedence for an injected transport.
+		if dial == nil && legacyDial != nil {
+			dial = func(_ context.Context, network, addr string) (net.Conn, error) { return legacyDial(network, addr) }
+		}
+		if dial == nil {
+			dial = (&net.Dialer{}).DialContext
+		}
+		raw, err := dial(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		if isNilInterface(raw) {
+			return nil, invalidOptionValue("TLSHandshake dial connection")
+		}
+		config := cloneTLSConfig(transport.TLSClientConfig)
+		if config == nil {
+			config = &tls.Config{}
+		}
+		if config.ServerName == "" {
+			config.ServerName, _, _ = net.SplitHostPort(addr)
+		}
+		if timeout := transport.TLSHandshakeTimeout; timeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
+		conn, err := handshake(ctx, raw, config)
+		if err == nil {
+			err = ctx.Err()
+		}
+		if err == nil && isNilInterface(conn) {
+			err = invalidOptionValue("TLSHandshake connection")
+		}
+		if err != nil {
+			_ = raw.Close()
+			return nil, err
+		}
+		return conn, nil
+	}
 }

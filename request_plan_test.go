@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"net/url"
 	"sync/atomic"
 	"testing"
 
@@ -250,21 +249,23 @@ func TestRequestPlanPathTraceTracksBasePathProvenance(t *testing.T) {
 	}
 }
 
-func TestDeliverySnapshotClonesFormWhileSharedFactsBorrowIt(t *testing.T) {
-	form := url.Values{"private": {"secret"}}
-	builder := newTestClient(t).Post("https://example.test").Form(form)
-	borrowed := builder.body.form
-
+func TestRequestPlanSnapshotsFormValues(t *testing.T) {
+	builder := newTestClient(t).Post("https://example.test").FormFieldValue("a", Public("first")).FormFieldValue("a", Public("second"))
 	facts, err := builder.compileRequestPlan()
 	require.NoError(t, err)
-	facts.body.form.Set("private", "facts")
-	assert.Equal(t, "facts", borrowed.Get("private"))
-	borrowed.Set("private", "secret")
-
 	delivery, err := builder.compileDeliverySnapshot()
 	require.NoError(t, err)
-	delivery.plan.body.form.Set("private", "changed")
-	assert.Equal(t, "secret", borrowed.Get("private"))
+	builder.DelFormField("a").FormField("b", "later")
+	for _, plan := range []*requestPlan{facts, delivery.plan} {
+		body, err := prepareBodyFromPlan(plan.body, plan.bodyPreflightHeaders(), &delivery.client)
+		require.NoError(t, err)
+		encoded, err := io.ReadAll(body.body)
+		require.NoError(t, err)
+		assert.Equal(t, "a=first&a=second", string(encoded))
+		projected, err := projectRequestPreparation(t.Context(), plan, 100)
+		require.NoError(t, err)
+		assert.Equal(t, encoded, projected.Body().Data().Bytes())
+	}
 }
 
 func TestRequestPlanDoesNotCallDeliveryCollaborators(t *testing.T) {
@@ -306,8 +307,12 @@ func TestRequestPlanMapsMethodAndURLFailuresToCreationSentinel(t *testing.T) {
 			builder: newTestClient(t).Request("bad method", "https://user:password@example.test/items?secret=value"),
 		},
 		{
-			name:    "invalid query escape",
-			builder: newTestClient(t).Get("https://user:password@example.test/items?secret=%zz"),
+			name:    "invalid query escape with builder value",
+			builder: newTestClient(t).Get("https://user:password@example.test/items?secret=%zz").Query("other", "value"),
+		},
+		{
+			name:    "invalid relative query without base URL",
+			builder: newTestClient(t).Get("/items?secret=%zz"),
 		},
 	}
 

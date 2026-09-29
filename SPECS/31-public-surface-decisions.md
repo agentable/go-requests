@@ -74,7 +74,8 @@ returns `StreamResponse`, whose body remains open until the caller closes it.
 
 ### Explicit Custom Transport Ownership
 
-`WithTransport` borrows a caller-supplied transport. Closable transports such
+`WithTransport` clones standard transports and borrows other caller-supplied
+transports. Closable custom transports such
 as `http3.Transport(...)` remain visible handles owned by the caller.
 
 - **Why**: Clients, clones, and `AsHTTPClient` snapshots may share a custom
@@ -83,6 +84,23 @@ as `http3.Transport(...)` remain visible handles owned by the caller.
   `Client.Close`, owned-transport registries, reference counting, or finalizers.
 - **Contract Impact**: The caller closes a custom transport only after every
   client, clone, snapshot, and in-flight request using it is done.
+
+### Managed TLS Handshake Extension
+
+`WithTLSHandshake` is the root extension point consumed by fingerprint profiles.
+Root owns the standard transport and rebinds the handshake on Clone and
+AsHTTPClient. Fingerprint owns uTLS, not transport identity. Ordinary callers
+continue using `WithProfile` and client-level TLS/dial options.
+
+- **Why**: Copying DialTLSContext copies its closure, which otherwise continues
+  reading the original transport's dialer and TLS config.
+- **Rejected**: Replaying an entire profile, global callback registries, copying
+  arbitrary closures, or wrapping every standard transport option in a second
+  transport protocol.
+- **Contract Impact**: Standard TLS dial-hook scope, explicit failure-close responsibility,
+  context-aware handshake timeout, and replacement/clearing rules are owned by
+  `SPECS/20-client-api-specs.md`. Raw standard transport copies remain ordinary
+  function copies; they do not acquire hidden rebinding metadata.
 
 ### Response Escape Hatches
 
@@ -262,7 +280,8 @@ These symbols remain public because they name real integration points:
   configuration without carrying requests metadata or middleware.
 - `UnsafeHTTPClient` exposes the underlying client for advanced integration.
   Callers that mutate it own synchronization and consistency risk.
-- `GetTLSConfig` returns a standard shallow `tls.Config.Clone` so extension
+- `GetTLSConfig` returns a standard shallow clone of the active standard
+  transport TLS settings (nil for custom transports) so extension
   modules can inherit TLS intent without receiving the client's top-level
   config pointer. Referenced collaborators keep the ownership contract defined
   by `SPECS/20-client-api-specs.md`.

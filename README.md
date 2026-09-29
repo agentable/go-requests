@@ -196,6 +196,12 @@ if err != nil {
 }
 ```
 
+Use the fingerprint profile with `requests.New` or `Client.Clone`; its TLS
+handshake follows each client's effective dialer and TLS settings. For manual
+`net/http` setup, `fingerprint.ConfigureTransport` configures the final transport
+object. Reapply it after `http.Transport.Clone`; do not configure a transport
+with it before `WithTransport`, which clones standard transports.
+
 HTTP/3 transport:
 
 ```go
@@ -244,6 +250,44 @@ if err != nil {
 	log.Fatal(err)
 }
 ```
+
+### Customize a TLS handshake
+
+Use `WithTLSHandshake` to attach a TLS implementation or inspect a completed
+handshake while keeping the standard transport's dialing and pooling. This
+example logs the negotiated TLS version using Go's TLS implementation:
+
+```go
+client, err := requests.New(
+	requests.WithoutProxy(),
+	requests.WithTLSHandshakeTimeout(5*time.Second),
+	requests.WithTLSHandshake(func(ctx context.Context, raw net.Conn, config *tls.Config) (net.Conn, error) {
+		conn := tls.Client(raw, config)
+		if err := conn.HandshakeContext(ctx); err != nil {
+			return nil, err
+		}
+		log.Printf("TLS version: %x", conn.ConnectionState().Version)
+		return conn, nil
+	}),
+)
+if err != nil {
+	log.Fatal(err)
+}
+```
+
+Import `context`, `crypto/tls`, `log`, `net`, and `time` alongside `requests`.
+The callback runs for TLS to the first hop: direct HTTPS connections or TLS
+to an HTTPS proxy. It must be safe for concurrent calls, honor its context,
+and return a connection with the TLS
+handshake complete. It receives a shallow TLS-config copy with the destination
+server name filled when unset. Leave failure cleanup to `requests`; do not
+close the input connection in the callback. The transport owns successful
+connections.
+
+This hook requires a standard `*http.Transport`; it does not customize target
+TLS after CONNECT or SOCKS proxy setup, or HTTP/3. `WithTLSHandshake(nil)` restores standard TLS
+dialing. Replacing the transport or HTTP client clears the managed hook, so
+apply those options before `WithTLSHandshake` or a fingerprint profile.
 
 ## Making Requests
 
@@ -518,7 +562,9 @@ Use `NoRetry()` on a request to disable a positive client default. Replayable re
 The retry logic automatically honors `Retry-After` on `429` and `503` responses.
 Before a retry, a successfully returned prior response body owned by the retry
 loop is drained within an internal cap and closed. A drain or close failure
-stops delivery and remains inspectable through the returned error chain.
+stops delivery and remains inspectable through the returned error chain. If
+recreating the request body fails after that cleanup, delivery returns an error
+and no response; the already-closed response is not returned.
 
 ## `net/http` Integration
 
@@ -527,12 +573,23 @@ Use `AsHTTPClient()` when another SDK accepts `*http.Client`:
 ```go
 httpClient := client.AsHTTPClient()
 resp, err := httpClient.Get("https://api.example.com/resource")
+if err != nil {
+	log.Fatal(err)
+}
+defer resp.Body.Close()
+fmt.Println(resp.StatusCode)
 ```
 
 The returned client snapshots `net/http` configuration: timeout, cookie jar,
 redirect callback, and transport. A standard transport and its top-level TLS
 config are copied; custom transports, the jar, redirect callback, and values
-referenced by TLS configuration retain their identity.
+referenced by TLS configuration retain their identity. The receiving caller
+owns response-body cleanup, as with any ordinary `http.Client`.
+
+Managed TLS handshake hooks follow the copied transport in `Client.Clone` and
+`AsHTTPClient`. To derive another configured client, call `Client.Clone` before
+exporting it. Cloning the exported `http.Transport` directly cannot rebind its
+handshake callback to the new transport.
 
 The snapshot does not carry the requests base URL, headers, cookies outside the
 jar, auth, ordered metadata, middleware, retries, codecs, or response helpers.
@@ -594,13 +651,17 @@ Construction ownership is explicit:
 | `WithHeaders` | Header map and value slices | Nothing |
 | `WithTLSConfig` and extension TLS options | Standard shallow `tls.Config.Clone` | Referenced slices/maps, callbacks, certificate pools, session cache, key logger, private keys, and parsed leaves |
 | `WithCertificates` | Certificate slice, DER bytes, signature algorithms, OCSP staple, and SCT bytes | Private keys and parsed leaves |
-| `WithHTTPClient`, `WithTransport`, `WithCookieJar`, custom auth/logger/codecs | Nothing | The supplied collaborator and its concurrency safety |
+| `WithTransport` with `*http.Transport` | Standard transport clone; a separate connection pool | Referenced callbacks and TLS collaborators |
+| `WithHTTPClient` | Client value and standard transport clone | Cookie jar, redirect callback, custom transport and referenced TLS collaborators |
+| Custom `WithTransport`, `WithCookieJar`, custom auth/logger/codecs | Nothing | The supplied collaborator and its concurrency safety |
 
 After construction, do not mutate values listed as caller-owned while the client
-may use them. `GetTLSConfig` also returns the standard shallow clone rather than
-claiming a full deep copy.
+may use them. `GetTLSConfig` returns a shallow clone of the active standard
+transport TLS settings. Incremental TLS options preserve injected trust roots
+and session caches; replacing the transport replaces its TLS settings.
 
-`WithTransport` borrows the supplied transport. Clones and `AsHTTPClient`
+`WithTransport` clones standard transports without copying their connection pools.
+Other transports are borrowed. Clones and `AsHTTPClient`
 snapshots may share a custom transport by identity. If it implements `Close`,
 the caller closes it only after all clients, snapshots, and in-flight requests
 using it are done.

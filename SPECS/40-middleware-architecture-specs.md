@@ -29,7 +29,11 @@ Across layers, client middleware wraps request middleware. The effective stack i
 2. request middleware
 3. final HTTP execution handler
 
-If middleware returns without calling the next handler, the transport never owns the materialized delivery body. `requests` closes that undelivered body after the middleware chain returns, including response, error, and nil-response short circuits.
+If middleware returns without calling the next handler, the transport never owns the materialized delivery body. `requests` closes that undelivered body after the middleware chain returns, including response, error, and nil-response short circuits. Replacing or clearing
+`req.Body` does not abandon the original library-owned body. Cleanup closes the
+current body (including middleware wrappers) and releases the original body at
+most once, even when middleware already closed it. This does not close borrowed
+readers or guarantee interruption of an arbitrary borrowed reader's `Read`.
 
 > **Why**: Client middleware expresses cross-cutting policy for all requests, while request middleware expresses one-shot behavior closer to the transport attempt.
 >

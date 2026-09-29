@@ -220,15 +220,20 @@ func resolveRequestURL(baseURL, requestPath string, queryValues url.Values) (*ur
 	if err != nil {
 		return nil, err
 	}
-	requestQuery, err := url.ParseQuery(requestURL.RawQuery)
-	if err != nil {
-		return nil, err
-	}
 	if requestURL.IsAbs() || baseURL == "" {
+		if len(queryValues) != 0 {
+			if _, err := url.ParseQuery(requestURL.RawQuery); err != nil {
+				return nil, err
+			}
+		}
 		addQueryValues(requestURL, queryValues)
 		return requestURL, nil
 	}
 
+	requestQuery, err := url.ParseQuery(requestURL.RawQuery)
+	if err != nil {
+		return nil, err
+	}
 	base, err := url.Parse(baseURL)
 	if err != nil {
 		return nil, err

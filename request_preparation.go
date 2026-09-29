@@ -433,9 +433,6 @@ func validatePreparationBodyShape(plan *requestPlan) error {
 		}
 		return nil
 	case requestBodyForm:
-		if plan.body.form == nil {
-			return fmt.Errorf("%w: request body", ErrInvalidConfigValue)
-		}
 		return nil
 	case requestBodyMultipart:
 		if plan.body.multipart == nil {

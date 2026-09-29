@@ -3,6 +3,7 @@ package requests
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"net/http"
 	"slices"
 )
 
@@ -35,49 +36,39 @@ func cloneByteSlices(values [][]byte) [][]byte {
 	return cloned
 }
 
-func (c *Client) syncTLSConfigLocked() error {
-	transport, err := c.ensureTransport()
-	if err != nil {
-		return err
-	}
-	transport.TLSClientConfig = c.tlsConfig
+func setTransportTLSConfig(transport *http.Transport, config *tls.Config) {
+	transport.TLSClientConfig = config
 	if isHTTP2Configured(transport) {
 		ensureHTTP2NextProtos(transport)
 		transport.ForceAttemptHTTP2 = true
 	}
-	return nil
 }
 
 // setTLSConfig replaces the TLS configuration.
 func (c *Client) setTLSConfig(config *tls.Config) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	config = cloneTLSConfig(config)
-	previous := c.tlsConfig
-	c.tlsConfig = config
-	if err := c.syncTLSConfigLocked(); err != nil {
-		c.tlsConfig = previous
+	transport, err := c.ensureTransport()
+	if err != nil {
 		return err
 	}
+	setTransportTLSConfig(transport, cloneTLSConfig(config))
 	return nil
 }
 
 func (c *Client) updateTLSConfigLocked(update func(*tls.Config) error) error {
-	config := cloneTLSConfig(c.tlsConfig)
+	transport, err := c.ensureTransport()
+	if err != nil {
+		return err
+	}
+	config := cloneTLSConfig(transport.TLSClientConfig)
 	if config == nil {
 		config = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 	if err := update(config); err != nil {
 		return err
 	}
-
-	previous := c.tlsConfig
-	c.tlsConfig = config
-	if err := c.syncTLSConfigLocked(); err != nil {
-		c.tlsConfig = previous
-		return err
-	}
+	setTransportTLSConfig(transport, config)
 	return nil
 }
 
@@ -138,12 +129,13 @@ func (c *Client) addRootCAs(pemCerts []byte) error {
 	})
 }
 
-// GetTLSConfig returns a clone of the configured TLS settings.
+// GetTLSConfig returns a shallow clone of the active standard transport's TLS
+// settings, or nil when no standard transport TLS settings are available.
 func (c *Client) GetTLSConfig() *tls.Config {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if c.tlsConfig == nil {
-		return nil
+	if transport, ok := c.httpClient.Transport.(*http.Transport); ok {
+		return cloneTLSConfig(transport.TLSClientConfig)
 	}
-	return c.tlsConfig.Clone()
+	return nil
 }

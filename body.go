@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -24,14 +25,12 @@ const (
 	requestBodyMultipart
 )
 
-// requestBodyPlan is the single selected body source. The wire-oriented
-// fields remain separate from disclosure facts so owner capabilities cannot
-// alter delivery encoding or replay behavior.
+// requestBodyPlan is the single selected body source. Form occurrences own
+// both field values and disclosure tags; encoding is deferred to the exit.
 type requestBodyPlan struct {
 	kind                 requestBodyKind
 	value                any
 	valuePublic          bool
-	form                 url.Values
 	formOccurrences      []requestBodyFormOccurrence
 	multipart            *Multipart
 	contentType          string
@@ -75,13 +74,8 @@ func (b *RequestBuilder) Form(v any) *RequestBuilder {
 		return b
 	}
 
-	formFields = formFields.Clone()
-	if formFields == nil {
-		formFields = url.Values{}
-	}
 	plan := requestBodyPlan{
 		kind:                 requestBodyForm,
-		form:                 formFields,
 		contentType:          "application/x-www-form-urlencoded",
 		generatedContentType: true,
 	}
@@ -109,11 +103,11 @@ func (b *RequestBuilder) FormFields(fields any) *RequestBuilder {
 		}
 		return b
 	}
-	formFields := b.activateForm()
+	b.activateForm()
 
 	for key, value := range values {
 		for _, v := range value {
-			b.addFormField(formFields, key, privateRequestValue(v))
+			b.addFormField(key, privateRequestValue(v))
 		}
 	}
 	return b
@@ -122,7 +116,8 @@ func (b *RequestBuilder) FormFields(fields any) *RequestBuilder {
 // FormField adds or updates a form field.
 // Without files, the resulting form body is buffered and safe to replay for retries.
 func (b *RequestBuilder) FormField(key, val string) *RequestBuilder {
-	b.addFormField(b.activateForm(), key, privateRequestValue(val))
+	b.activateForm()
+	b.addFormField(key, privateRequestValue(val))
 	return b
 }
 
@@ -130,24 +125,22 @@ func (b *RequestBuilder) FormField(key, val string) *RequestBuilder {
 // Public form bytes are available to Prepare only when every actual form
 // occurrence in the selected form is public.
 func (b *RequestBuilder) FormFieldValue(key string, value Value) *RequestBuilder {
-	b.addFormField(b.activateForm(), key, value)
+	b.activateForm()
+	b.addFormField(key, value)
 	return b
 }
 
-func (b *RequestBuilder) activateForm() url.Values {
+func (b *RequestBuilder) activateForm() {
 	if b.body.kind != requestBodyForm {
 		b.selectBody(requestBodyPlan{
 			kind:                 requestBodyForm,
-			form:                 url.Values{},
 			contentType:          "application/x-www-form-urlencoded",
 			generatedContentType: true,
 		})
 	}
-	return b.body.form
 }
 
-func (b *RequestBuilder) addFormField(form url.Values, key string, value Value) {
-	form.Add(key, value.rawValue())
+func (b *RequestBuilder) addFormField(key string, value Value) {
 	b.body.formOccurrences = append(b.body.formOccurrences, requestBodyFormOccurrence{
 		name:  key,
 		value: value,
@@ -157,25 +150,9 @@ func (b *RequestBuilder) addFormField(form url.Values, key string, value Value) 
 // DelFormField removes one or more form fields.
 func (b *RequestBuilder) DelFormField(key ...string) *RequestBuilder {
 	if b.body.kind == requestBodyForm {
-		for _, k := range key {
-			b.body.form.Del(k)
-		}
-		if len(b.body.formOccurrences) > 0 {
-			kept := b.body.formOccurrences[:0]
-			for _, occurrence := range b.body.formOccurrences {
-				removed := false
-				for _, name := range key {
-					if occurrence.name == name {
-						removed = true
-						break
-					}
-				}
-				if !removed {
-					kept = append(kept, occurrence)
-				}
-			}
-			b.body.formOccurrences = kept
-		}
+		b.body.formOccurrences = slices.DeleteFunc(b.body.formOccurrences, func(field requestBodyFormOccurrence) bool {
+			return slices.Contains(key, field.name)
+		})
 	}
 	return b
 }
@@ -330,7 +307,11 @@ func prepareBodyFromPlan(body requestBodyPlan, headers http.Header, snap *client
 		}
 		return prepareReaderBody(reader, contentType)
 	case requestBodyForm:
-		return replayableRequestBody([]byte(body.form.Encode()), contentType), nil
+		values := make(url.Values, len(body.formOccurrences))
+		for _, field := range body.formOccurrences {
+			values.Add(field.name, field.value.rawValue())
+		}
+		return replayableRequestBody([]byte(values.Encode()), contentType), nil
 	case requestBodyMultipart:
 		reader, generatedContentType, err := body.multipart.reader()
 		if err != nil {

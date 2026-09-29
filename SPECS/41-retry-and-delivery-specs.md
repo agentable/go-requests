@@ -100,6 +100,7 @@ The retry loop respects the request context.
 - If the context is canceled or reaches its deadline during backoff, delivery stops and returns `ctx.Err()`.
 - Before sleeping for a retry, any successfully returned response body owned by the retry loop is drained up to an internal cap and closed.
 - If draining or closing that retry response fails, delivery stops before another transport attempt and returns an error preserving every cleanup cause.
+- If reopening the body for the next attempt fails, delivery returns the reopening error without returning the already drained and closed intermediate response.
 - When proxy rotation is configured through `WithProxies` or a proxy selector, proxy choice is evaluated per transport attempt, so retries may use different proxies.
 
 Callers classify the failure with the package helpers: `IsCanceled` matches `context.Canceled` only, and `IsTimeout` matches `context.DeadlineExceeded` and `net.Error` timeouts. The two are orthogonal so caller-driven cancellation is distinguishable from a deadline hit.

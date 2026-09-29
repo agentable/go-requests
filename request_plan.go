@@ -286,9 +286,7 @@ func snapshotBuilderMetadata(b *RequestBuilder) requestMetadata {
 
 func cloneRequestBodyPlan(body requestBodyPlan) requestBodyPlan { //nolint:gocritic // Cloning preserves structural value semantics while payload bytes stay borrowed.
 	clone := body
-	// Form values remain a borrowed delivery source in shared facts. A
-	// delivery-bound compile clones the container after static validation;
-	// Prepare rebuilds all-public bytes from tagged occurrences instead.
+	// Form strings and tags are owned together by the detached plan.
 	clone.formOccurrences = slices.Clone(body.formOccurrences)
 	// PublicPayload bytes remain builder-owned and are read-only in the shared plan.
 	// Delivery reads them at materialization and creates a replayable body copy.
@@ -323,9 +321,6 @@ func validateDeliveryStaticFacts(body requestBodyPlan, headers http.Header) erro
 		}
 		return nil
 	case requestBodyForm:
-		if body.form == nil {
-			return previewInvalidBodyError()
-		}
 		return nil
 	default:
 		return previewInvalidBodyError()
@@ -346,7 +341,10 @@ func compileQueryOccurrences(baseURL, requestPath string, builder []requestOccur
 	}
 	requestQuery, err := url.ParseQuery(requestURL.RawQuery)
 	if err != nil {
-		return nil, err
+		if !requestURL.IsAbs() || len(builder) != 0 {
+			return nil, err
+		}
+		requestQuery = nil // The raw absolute URL needs no structured query projection.
 	}
 
 	baseQuery := url.Values(nil)

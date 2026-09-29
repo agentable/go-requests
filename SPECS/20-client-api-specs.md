@@ -105,8 +105,12 @@ Ordered headers preserve caller-specified insertion order as request intent. The
 `Client` owns the underlying `http.Client` and transport-level configuration:
 
 - `WithTimeout` sets the default `http.Client.Timeout`.
-- `WithTransport` and `WithHTTPClient` replace the underlying transport or client; `WithHTTPClient(nil)` is invalid.
-- A non-nil `WithTransport` value is borrowed. The caller owns its lifecycle
+- `WithTransport` and `WithHTTPClient` replace the underlying transport or client; `WithHTTPClient(nil)` is invalid. `WithHTTPClient` copies the client value and clones its standard transport; the jar, redirect callback and custom transports retain their identity. Subsequent options do not change the supplied client.
+- `WithTransport` clones a standard `*http.Transport` when the option is applied,
+  keeping configuration and connection pools independent. Referenced callbacks
+  and TLS collaborators retain standard shallow-clone semantics. Clone may
+  initialize source protocol defaults; later options do not configure the source.
+- A non-standard `WithTransport` value is borrowed. The caller owns its lifecycle
   and concurrency safety and MUST NOT mutate or close it while this client, its
   clones, its snapshots, or their requests may still use it.
 - `WithHTTP2` enables HTTP/2 on the active `*http.Transport` and reports configuration errors during construction.
@@ -129,7 +133,12 @@ applied to HTTP/3 or another incompatible custom transport.
 
 ## TLS and HTTP/2
 
-`Client` owns TLS configuration and certificate material:
+`Client` owns TLS configuration and certificate material through its active
+standard transport. Incremental TLS options start from that transport's current
+TLS configuration, including settings injected by WithTransport or WithHTTPClient.
+Replacing the transport replaces this source; custom transports expose no root
+TLS settings:
+
 
 - `WithTLSConfig`, `WithInsecureSkipVerify`, `WithCertificates`, `WithClientCertificate`, `WithTLSServerName`, `WithRootCertificate`, and `WithRootCertificateFromString` configure client-level TLS state.
 - `WithTLSConfig` captures `tls.Config.Clone()` when the option is applied. This
@@ -138,8 +147,9 @@ applied to HTTP/3 or another incompatible custom transport.
   callbacks, certificate pools, session caches, key loggers, private keys, and
   parsed certificate leaves. Callers MUST NOT mutate those referenced values
   while the client may use them.
-- `WithTLSConfig(nil)` clears TLS state established by earlier root TLS options
-  and assigns nil to the active standard transport's `TLSClientConfig`. It is
+- `WithTLSConfig(nil)` clears TLS state, including injected settings,
+  and assigns nil to the active standard transport's `TLSClientConfig`. If HTTP/2
+  remains enabled, its ALPN configuration may materialize a fresh TLS config. It is
   still a root transport option and fails on a custom non-`*http.Transport`
   instead of leaving client state and live transport state inconsistent.
 - `WithCertificates` additionally owns copies of the certificate slice, DER
@@ -153,13 +163,59 @@ applied to HTTP/3 or another incompatible custom transport.
 
 `WithSession` MUST NOT replace an existing cookie jar or `TLSConfig.ClientSessionCache`.
 
-`GetTLSConfig` and `Client.Clone` return or retain another standard shallow
+`GetTLSConfig` reads the effective standard transport TLS settings (nil for a
+custom transport). `GetTLSConfig` and `Client.Clone` return or retain another standard shallow
 `tls.Config.Clone`. They do not expose the client's top-level config pointer and
 do not claim to deep-copy opaque collaborators.
 
 > **Why**: TLS policy is connection-level state, so it belongs on the client instead of on individual builders.
 >
 > **Rejected**: Per-request TLS mutation and constructors that silently mix transport and request concerns.
+
+## Custom TLS Handshakes
+
+```go
+func WithTLSHandshake(func(context.Context, net.Conn, *tls.Config) (net.Conn, error)) Option
+```
+
+This option is for TLS extensions such as fingerprint profiles. It applies to
+standard transports through `DialTLSContext`: direct HTTPS and TLS to an HTTPS
+proxy. It does not replace target TLS after CONNECT/SOCKS or in HTTP/3. Incompatible custom
+transports fail construction with `ErrInvalidTransportType`, including when
+clearing the hook.
+
+The root owns dialing and binding to the active transport. It uses that
+transport's DialContext, then Dial, then a standard dialer as available. The
+callback receives the connected socket and a non-nil standard shallow TLS clone;
+an empty ServerName is filled with the target host, including IP addresses.
+The callback must support concurrent calls, honor its context, complete the
+handshake, and return a TLS wrapper of the input connection. ALPN requires a
+connection exposing `ConnectionState() tls.ConnectionState`. It must not retain
+or close a failed input: root closes it on error, cancellation, timeout, or an
+invalid nil/typed-nil result. Successful connections belong to net/http.
+Callbacks must not open unrelated connections or capture mutable transport
+configuration; the config parameter supplies the effective per-connection view.
+
+`TLSHandshakeTimeout` limits only the handshake by deriving a context after
+successful dialing. Zero means no additional timeout. Cooperative callbacks
+return on cancellation; ignoring context is unsupported. Timeout errors remain
+classifiable by `IsTimeout`. Invalid connections return `ErrInvalidConfigValue`.
+
+`Clone` and `AsHTTPClient` rebind managed callbacks to the copied standard
+transport, with independent connection pools. Later TLS and dial options use
+that copy's effective settings. Callback-owned collaborators may remain shared.
+Request snapshots reuse the existing transport and pool.
+
+`WithTLSHandshake(nil)` clears both TLS dial hooks and the managed selection,
+restoring standard TLS rather than reviving a previous callback. Replacing the
+whole transport/client through `WithTransport` or `WithHTTPClient` clears the
+managed selection; the new input's own callback fields retain ordinary standard
+shallow-copy semantics. Apply the TLS profile or handshake after replacement.
+
+A raw `http.Transport.Clone` does not retain managed rebinding metadata. Derive
+through `Client.Clone` before exporting with `AsHTTPClient` when further managed
+copies are needed. Arbitrary callbacks supplied inside a raw transport are not
+promised deep-copy or rebinding behavior.
 
 ## Proxy Policy
 

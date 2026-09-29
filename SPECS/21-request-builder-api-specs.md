@@ -517,7 +517,10 @@ from the base URL, request path, and builder are combined in that order. Values
 are appended rather than replaced, so repeated keys remain repeated. An
 absolute request URL overrides both the base path and base query.
 
-Malformed request-path query syntax fails URL preflight with
+An absolute request URL without added query values preserves its raw query
+string, including semicolons or percent escapes that cannot be parsed as
+form values. When a relative URL or builder query values require merging,
+malformed request-path query syntax fails URL preflight with
 `ErrRequestCreationFailed` before body preparation or transport dispatch.
 
 ## Request Metadata

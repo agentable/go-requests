@@ -540,9 +540,6 @@ func previewBody(
 		body.mediaType = selection.contentType
 		return body, nil
 	case requestBodyForm:
-		if selection.form == nil {
-			return PreviewBody{}, previewInvalidBodyError()
-		}
 		if err := previewCheckpoint(ctx); err != nil {
 			return PreviewBody{}, err
 		}

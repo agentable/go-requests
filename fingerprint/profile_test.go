@@ -417,3 +417,109 @@ func TestConfigureTransportUsesTLSConfigForHandshake(t *testing.T) {
 
 	require.Error(t, err)
 }
+
+func TestProfileDoesNotMutateInputTransport(t *testing.T) {
+	input := &http.Transport{TLSClientConfig: &tls.Config{ServerName: "original"}}
+	base, err := requests.New(requests.WithTransport(input))
+	require.NoError(t, err)
+	configured, err := requests.New(requests.WithTransport(input), requests.WithProfile(Chrome()))
+	require.NoError(t, err)
+	require.Nil(t, input.DialTLSContext)
+	require.Nil(t, base.UnsafeHTTPClient().Transport.(*http.Transport).DialTLSContext)
+	require.NotNil(t, configured.UnsafeHTTPClient().Transport.(*http.Transport).DialTLSContext)
+	require.Equal(t, "original", input.TLSClientConfig.ServerName)
+}
+
+func TestProfileCloneUsesOwnDialer(t *testing.T) {
+	var callsA, callsB atomic.Int32
+	dialErr := errors.New("dial stopped")
+	dialA := func(context.Context, string, string) (net.Conn, error) { callsA.Add(1); return nil, dialErr }
+	dialB := func(context.Context, string, string) (net.Conn, error) { callsB.Add(1); return nil, dialErr }
+	base, err := requests.New(requests.WithProfile(Chrome()), requests.WithDialContext(dialA))
+	require.NoError(t, err)
+	clone, err := base.Clone(requests.WithDialContext(dialB))
+	require.NoError(t, err)
+	_, err = clone.Get("https://example.test").Send(t.Context())
+	require.True(t, errors.Is(err, dialErr))
+	require.Equal(t, int32(0), callsA.Load())
+	require.Equal(t, int32(1), callsB.Load())
+	_, err = base.Get("https://example.test").Send(t.Context())
+	require.True(t, errors.Is(err, dialErr))
+	require.Equal(t, int32(1), callsA.Load())
+	require.Equal(t, int32(1), callsB.Load())
+	hc := base.AsHTTPClient()
+	hc.Transport.(*http.Transport).DialContext = dialB
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.test", nil)
+	require.NoError(t, err)
+	_, err = hc.Do(req)
+	require.True(t, errors.Is(err, dialErr))
+	require.Equal(t, int32(1), callsA.Load())
+	require.Equal(t, int32(2), callsB.Load())
+}
+
+func TestProfileCopiesUseOwnTLSConfig(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer server.Close()
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	for _, mode := range []string{"clone", "adapter"} {
+		t.Run(mode, func(t *testing.T) {
+			base, err := requests.New(requests.WithProfile(Chrome()), requests.WithTLSConfig(&tls.Config{RootCAs: x509.NewCertPool(), ServerName: "example.com"}))
+			require.NoError(t, err)
+			cfg := &tls.Config{RootCAs: roots, ServerName: "example.com"}
+			if mode == "clone" {
+				clone, err := base.Clone(requests.WithTLSConfig(cfg))
+				require.NoError(t, err)
+				_, err = clone.Get(server.URL).Send(t.Context())
+				require.NoError(t, err)
+			} else {
+				hc := base.AsHTTPClient()
+				hc.Transport.(*http.Transport).TLSClientConfig = cfg
+				req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+				require.NoError(t, err)
+				resp, err := hc.Do(req)
+				require.NoError(t, err)
+				require.NoError(t, resp.Body.Close())
+			}
+			_, err = base.Get(server.URL).Send(t.Context())
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestProfileCopiesHaveIndependentPools(t *testing.T) {
+	var connections atomic.Int32
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	server.StartTLS()
+	defer server.Close()
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	base, err := requests.New(requests.WithProfile(Chrome()), requests.WithTLSConfig(&tls.Config{RootCAs: roots}))
+	require.NoError(t, err)
+	for range 2 {
+		_, err = base.Get(server.URL).Send(t.Context())
+		require.NoError(t, err)
+	}
+	require.Equal(t, int32(1), connections.Load())
+	clone, err := base.Clone()
+	require.NoError(t, err)
+	for range 2 {
+		_, err = clone.Get(server.URL).Send(t.Context())
+		require.NoError(t, err)
+	}
+	require.Equal(t, int32(2), connections.Load())
+	hc := base.AsHTTPClient()
+	for range 2 {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+		require.NoError(t, err)
+		resp, err := hc.Do(req)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+	}
+	require.Equal(t, int32(3), connections.Load())
+}

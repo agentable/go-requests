@@ -302,9 +302,10 @@ func WithRootCertificateFromString(pemCerts string) Option {
 	}
 }
 
-// WithTransport sets the HTTP transport for the client. The client borrows a
-// non-nil transport; callers retain its lifecycle and must not close or mutate
-// it while this client, its clones, or its snapshots may have requests in flight.
+// WithTransport sets the HTTP transport for the client. Standard *http.Transport
+// inputs are cloned, with independent configuration and connection pools.
+// Custom transports are borrowed; callers retain their lifecycle and must not
+// close or mutate them while a client, clone, or snapshot may use them.
 func WithTransport(transport http.RoundTripper) Option {
 	return func(c *Client) error {
 		if transport != nil && isNilInterface(transport) {
@@ -322,12 +323,13 @@ func WithHTTP2() Option {
 	}
 }
 
-// WithHTTPClient sets the underlying http.Client.
+// WithHTTPClient copies the client value and clones its standard transport.
+// The cookie jar, redirect callback, and custom transports remain shared.
 // When combined with transport-modifying options (WithProxy, WithDialTimeout, etc.),
 // place WithHTTPClient first since it replaces the entire http.Client.
 func WithHTTPClient(httpClient *http.Client) Option {
 	return func(c *Client) error {
-		if httpClient == nil {
+		if httpClient == nil || (httpClient.Transport != nil && isNilInterface(httpClient.Transport)) {
 			return invalidOptionValue("HTTPClient")
 		}
 		c.setHTTPClient(httpClient)
@@ -367,6 +369,27 @@ func WithLocalAddr(addr net.Addr) Option {
 		}
 		return c.applyLocalAddr(addr)
 	}
+}
+
+// WithTLSHandshake customizes the standard transport TLS dial hook: direct
+// HTTPS and TLS to an HTTPS proxy. It does not override target TLS after a proxy
+// tunnel (CONNECT or SOCKS) or HTTP/3.
+//
+// The callback receives an already-dialed connection and a shallow TLS config
+// copy with ServerName completed from the target host when empty. It must be
+// safe for concurrent calls, honor ctx, and return a TLS wrapper of that same
+// connection after completing the handshake. For ALPN, the returned connection
+// must implement ConnectionState() tls.ConnectionState. The callback must not
+// close the input on failure; the client closes it. On success, net/http owns it.
+// Nil or typed-nil results without an error return ErrInvalidConfigValue.
+//
+// The active transport's TLSHandshakeTimeout bounds the handshake, not dialing.
+// Clone and AsHTTPClient rebind the callback to their own transport settings;
+// state captured by the callback itself remains shared. A nil callback clears
+// both TLS dial hooks and restores standard TLS. WithTransport and WithHTTPClient
+// replace the transport and discard this managed callback selection.
+func WithTLSHandshake(handshake func(context.Context, net.Conn, *tls.Config) (net.Conn, error)) Option {
+	return func(c *Client) error { return c.setTLSHandshake(handshake) }
 }
 
 // WithTLSHandshakeTimeout sets the TLS handshake timeout on the underlying transport.

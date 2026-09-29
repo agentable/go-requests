@@ -64,6 +64,9 @@ Diagnostics:
 - `Protocol()` returns the final `http.Response.Proto` string.
 - `TLS()` returns a copy of the final response TLS connection state, or nil for non-TLS responses.
 
+Intermediate responses discarded by retries remain owned by the delivery loop;
+a body-reopening error does not return them for a second cleanup.
+
 ## Decoding Contract
 
 `Decode` dispatches by `Content-Type` and only supports the content types recognized by `IsJSON`, `IsXML`, and `IsYAML`.

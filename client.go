@@ -24,9 +24,9 @@ type Client struct {
 	metadata       requestMetadata
 	orderedHeaders *orderedobject.Object[[]string]
 	middlewares    []Middleware
-	tlsConfig      *tls.Config
 	retry          RetryPolicy
 	httpClient     *http.Client
+	tlsHandshake   tlsHandshakeFunc
 	jsonEncoder    Encoder
 	jsonDecoder    Decoder
 	xmlEncoder     Encoder
@@ -147,9 +147,9 @@ func (c *Client) clone() *Client {
 		metadata:       c.metadata.clone(),
 		orderedHeaders: cloneOrderedHeaders(c.orderedHeaders),
 		middlewares:    slices.Clone(c.middlewares),
-		tlsConfig:      cloneTLSConfig(c.tlsConfig),
 		retry:          c.retry,
 		httpClient:     nil,
+		tlsHandshake:   c.tlsHandshake,
 		jsonEncoder:    c.jsonEncoder,
 		jsonDecoder:    c.jsonDecoder,
 		xmlEncoder:     c.xmlEncoder,
@@ -163,7 +163,7 @@ func (c *Client) clone() *Client {
 		dialContext:    c.dialContext,
 		auth:           c.auth,
 	}
-	clone.httpClient = cloneHTTPClient(c.httpClient, clone.tlsConfig)
+	clone.httpClient = cloneHTTPClient(c.httpClient, c.tlsHandshake)
 	return clone
 }
 
