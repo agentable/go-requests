@@ -679,8 +679,10 @@ A builder MAY define request-local delivery policy through:
 - `Retry`
 - `NoRetry`
 
-`Timeout` only creates a derived deadline when the provided context does not
-already have one.
+Positive `Timeout` bounds the entire request delivery, including retries and
+response reading. The effective deadline is the earlier of the parent context
+deadline and the request-local deadline. It never extends a parent's deadline
+or cancels the parent when the request finishes or reaches its local limit.
 
 Zero timeout means no request-local deadline. A negative timeout is invalid and
 returns `ErrInvalidConfigValue` through the preparation-error contract.
@@ -766,7 +768,7 @@ mutating a builder concurrently with any exit is outside the contract.
 - Do not chain `AddMiddleware`; it is a mutator, not a fluent builder method.
 - Do not add a `Custom(path, method)` alias; arbitrary request creation is
   method-first through `Request(method, path)`.
-- Do not assume `Timeout` overrides an existing context deadline.
+- Do not assume `Timeout` extends an earlier parent context deadline.
 - Do not add body aliases or content-type inference that obscure `JSON`, `XML`,
   `YAML`, `Text`, `Bytes`, `Reader`, form, and multipart ownership.
 - Do not replace `AuthMethod` or add a preparation-time reveal switch.

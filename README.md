@@ -527,6 +527,12 @@ is disabled. Each retry or body-preserving redirect receives a fresh reader.
 
 ## Retries and Delivery
 
+Use `client.Get(path).Timeout(d).Send(ctx)` to bound a request, including retries
+and response reading. A positive `d` applies even when `ctx` already has a
+deadline; the earlier deadline wins. Zero adds no request-local deadline.
+Completing the request leaves the parent context usable. With `SendStream`,
+close the returned response to release its request context.
+
 ### Client-level retries
 
 ```go

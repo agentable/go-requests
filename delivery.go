@@ -11,7 +11,8 @@ import (
 	"time"
 )
 
-// Timeout sets the request timeout. A negative duration records an
+// Timeout bounds delivery by the earlier of this duration and the parent deadline.
+// Zero adds no request-local deadline. A negative duration records an
 // ErrInvalidConfigValue returned by Send or SendStream before dispatch.
 func (b *RequestBuilder) Timeout(timeout time.Duration) *RequestBuilder {
 	if err := validateDurationOption("Timeout", timeout); err != nil {
@@ -139,7 +140,7 @@ func validateDeliveryPreflightFacts(body requestBodyPlan, headers http.Header) e
 }
 
 func prepareDeliveryContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if _, ok := ctx.Deadline(); !ok && timeout > 0 {
+	if timeout > 0 {
 		return context.WithTimeout(ctx, timeout)
 	}
 	return ctx, nil
