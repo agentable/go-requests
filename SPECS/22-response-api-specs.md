@@ -87,6 +87,10 @@ parameters do not change the match and substrings are not matches.
 - `DecodeXML` uses the XML decoder captured when `Send` dispatched the request.
 - `DecodeYAML` uses the YAML decoder captured when `Send` dispatched the request.
 
+The default JSON decoder requires a single JSON value with optional surrounding
+whitespace. It rejects additional values or trailing non-whitespace data and
+preserves reader errors. Custom JSON decoders retain their own decoding policy.
+
 If `Decode` cannot match a supported content type, it returns `ErrUnsupportedContentType`.
 
 > **Why**: A returned response is the result of one dispatch snapshot. Later

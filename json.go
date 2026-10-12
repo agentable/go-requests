@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 
-	"encoding/json/jsontext"
 	"encoding/json/v2"
 )
 
@@ -43,7 +42,7 @@ func (d *JSONDecoder) Decode(r io.Reader, v any) error {
 		return d.DecodeFunc(r, v)
 	}
 
-	if err := json.UnmarshalDecode(jsontext.NewDecoder(r), v); err != nil {
+	if err := json.UnmarshalRead(r, v); err != nil {
 		return fmt.Errorf("failed to decode JSON: %w", err)
 	}
 	return nil

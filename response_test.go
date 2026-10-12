@@ -452,6 +452,49 @@ func TestResponseDecodeJSON(t *testing.T) {
 	assert.True(t, jsonResponse.Status)
 }
 
+func TestResponseDecodeJSONSingleDocument(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{name: "single value", body: `{"items":[]}`},
+		{name: "trailing whitespace", body: "{\"items\":[]} \t\r\n"},
+		{name: "multiple values", body: `{"items":[]} {"items":[]}`, wantErr: true},
+		{name: "adjacent values", body: `{"items":[]}{"items":[]}`, wantErr: true},
+		{name: "trailing scalar", body: `{"items":[]} null`, wantErr: true},
+		{name: "trailing garbage", body: `{"items":[]} garbage`, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			t.Cleanup(server.Close)
+
+			client := newTestClient(t)
+			resp, err := client.Get(server.URL).Send(t.Context())
+			require.NoError(t, err)
+
+			for _, decode := range []func(any) error{resp.DecodeJSON, resp.Decode} {
+				var out struct {
+					Items []string `json:"items"`
+				}
+				err := decode(&out)
+				if tc.wantErr {
+					require.Error(t, err)
+					continue
+				}
+				require.NoError(t, err)
+				assert.Equal(t, []string{}, out.Items)
+			}
+		})
+	}
+}
+
 func TestResponseDecodeEmptyBodyIsNoOp(t *testing.T) {
 	resp := &Response{jsonDecoder: &JSONDecoder{}}
 	out := struct{ Value string }{Value: "unchanged"}

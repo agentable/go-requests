@@ -119,6 +119,15 @@ func TestCodecDecodeReadErrors(t *testing.T) {
 	}
 }
 
+func TestJSONDecoderTrailingReadError(t *testing.T) {
+	t.Parallel()
+
+	reader := io.MultiReader(strings.NewReader(`{"name":"Jane"}`), failingReader{})
+	var got codecFixture
+	err := (&JSONDecoder{}).Decode(reader, &got)
+	assert.ErrorIs(t, err, errCodecRead)
+}
+
 func TestCodecDecodeUnmarshalErrors(t *testing.T) {
 	t.Parallel()
 
