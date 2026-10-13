@@ -212,7 +212,8 @@ func TestCancelDuringStream(t *testing.T) {
 // a substitute for goleak — it catches gross leaks introduced by future
 // cancellation bugs without adding a dependency.
 func TestNoGoroutineLeakAfterCancel(t *testing.T) {
-	t.Parallel()
+	// Keep this test serial: the process-wide count includes goroutines from
+	// unrelated parallel tests, which can change between the two samples.
 
 	gate := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
