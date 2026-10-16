@@ -46,9 +46,19 @@ delete, recreate, or force-update an existing tag.
 
    Recalculate the root checksums against the final commit and require both
    values to equal the frozen implementation's values. Only excluded nested
-   module metadata may change after calculating them. Run the workspace's
-   behavior, vet, lint, race, and vulnerability checks on the final tree; leave
-   tidy and standalone resolution for the published boundary below.
+   module metadata may change after calculating them. The canonical local
+   `go.work` must include all four modules and a version-specific mapping for
+   the unpublished root version:
+
+   ```bash
+   go work edit -replace=github.com/agentable/go-requests@vX.Y.Z=.
+   ```
+
+   This workspace-only mapping keeps the final behavior gate on the exact
+   canonical source; publishable `go.mod` files retain real version pins and
+   contain no local replacements. Run the workspace's behavior, vet, lint,
+   race, and vulnerability checks on the final tree; leave tidy and standalone
+   resolution for the published boundary below.
 
    Do not run `go mod tidy` after writing the unpublished common pin. Go checks
    required versions during tidy even with `go.work` active, so that boundary is
@@ -80,6 +90,7 @@ delete, recreate, or force-update an existing tag.
    commit:
 
    ```bash
+   go work edit -dropreplace=github.com/agentable/go-requests@vX.Y.Z
    GOPROXY=direct go list -m github.com/agentable/go-requests@vX.Y.Z
    GOPROXY=direct go list -m github.com/agentable/go-requests/browser@vX.Y.Z
    GOPROXY=direct go list -m github.com/agentable/go-requests/fingerprint@vX.Y.Z
