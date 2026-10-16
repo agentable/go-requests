@@ -95,8 +95,8 @@ delete, recreate, or force-update an existing tag.
    GOPROXY=direct go list -m github.com/agentable/go-requests/browser@vX.Y.Z
    GOPROXY=direct go list -m github.com/agentable/go-requests/fingerprint@vX.Y.Z
    GOPROXY=direct go list -m github.com/agentable/go-requests/http3@vX.Y.Z
-   GOTOOLCHAIN=go1.27.2 task verify:all
-   GOTOOLCHAIN=go1.27.2 task test:published
+   GOWORK=off GOTOOLCHAIN=go1.27.2 task verify:all
+   GOWORK=off GOTOOLCHAIN=go1.27.2 task test:published
    ```
 
    Download the published root with `GOWORK=off GOPROXY=direct go mod download
@@ -104,6 +104,9 @@ delete, recreate, or force-update an existing tag.
    `GoModSum` to match the precomputed values exactly. Require a clean worktree
    after all gates, including extension module checksums. Do not repair a
    published release by committing checksum changes after its tags.
+   The pre-publication workspace gate proves the canonical source behavior;
+   these workspace-disabled gates prove the independently resolved published
+   module graph.
 
    If this post-publication gate finds a release defect, fix it in a new common
    patch release. Published tags remain immutable.
