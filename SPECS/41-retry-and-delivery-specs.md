@@ -129,6 +129,10 @@ checks and invokes `req.GetBody`.
 
 Non-replayable streaming bodies are attempted once; if their first attempt returns a retryable response, delivery returns `ErrRequestBodyNotReplayable`.
 
+`SizedReader` explicitly selects a non-replayable reader with a known length.
+Its positive length never implies replayability, even for a seekable source;
+neither retries nor 307/308 redirects receive a `GetBody` callback.
+
 The first request body is closed by the HTTP transport. Delivery materialization
 does not pre-close a caller-provided request reader. Nested multipart
 `FilePart.Body` values remain caller-owned and are not closed by the multipart

@@ -525,6 +525,22 @@ always populate the standard `http.Request.GetBody` contract, even when retry
 is disabled. Each retry or body-preserving redirect receives a fresh reader.
 `Reader` remains one-shot unless its source is seekable and sized.
 
+For a known-length body that must remain non-replayable, including a seekable
+source, use `SizedReader`. It sets `ContentLength` without pre-reading the reader
+or installing `GetBody`:
+
+```go
+stream, err := client.Post("/mutation").
+	SizedReader(strings.NewReader("payload"), "text/plain", 7).
+	NoRetry().SendStream(ctx)
+if stream != nil {
+	defer stream.Close()
+}
+if err != nil {
+	return err
+}
+```
+
 ## Retries and Delivery
 
 Use `client.Get(path).Timeout(d).Send(ctx)` to bound a request, including retries
@@ -848,6 +864,11 @@ for line, err := range stream.Lines() {
 	fmt.Printf("event: %s\n", line)
 }
 ```
+
+If `SendStream` returns both a response and an error (for example, when
+`CheckRedirect` rejects a redirect), the response retains status and headers but
+is already closed. Inspect its metadata for received-response evidence; do not
+read its body. Calling `Close` again is safe.
 
 ## Middleware
 

@@ -178,7 +178,13 @@ func TestMiddlewareShortCircuitSendStreamCleanup(t *testing.T) {
 					Multipart(NewMultipart().FileString("upload", "payload.txt", "payload")).
 					SendStream(t.Context())
 				if test.wantErr != nil {
-					assert.Nil(t, resp)
+					if test.wantResponseClosed {
+						require.NotNil(t, resp)
+						assert.Equal(t, http.StatusBadGateway, resp.StatusCode())
+						require.NoError(t, resp.Close())
+					} else {
+						assert.Nil(t, resp)
+					}
 					assert.ErrorIs(t, err, test.wantErr)
 					require.NotEmpty(t, logger.Errors)
 				} else {

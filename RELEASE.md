@@ -18,10 +18,20 @@ delete, recreate, or force-update an existing tag.
 
    ```bash
    task deps:update
-   task verify:all
+   GOTOOLCHAIN=go1.27.2 task verify:all
    ```
 
-2. Pin every extension to the common next version and commit the final tree:
+2. Commit the verified implementation, freezing every file included in the root
+   module archive. Use the workspace's shared
+   `scripts/release/module-checksums` tool against that canonical Git commit to
+   calculate the future root version's `Sum` and `GoModSum`. The tool uses
+   official `golang.org/x/mod/zip.CreateFromVCS` archive filtering and
+   `dirhash.Hash1`, with no temporary source checkout or module proxy. First
+   verify its calculation against a directly downloaded published root release.
+
+   Pin every extension to the common next version and replace its old root
+   checksum entries with these content-derived future checksums. Commit the
+   final release metadata:
 
    ```bash
    for dir in browser fingerprint http3; do
@@ -29,6 +39,12 @@ delete, recreate, or force-update an existing tag.
    done
    git commit
    ```
+
+   Recalculate the root checksums against the final commit and require both
+   values to equal the frozen implementation's values. Only excluded nested
+   module metadata may change after calculating them. Run the workspace's
+   behavior, vet, lint, race, and vulnerability checks on the final tree; leave
+   tidy and standalone resolution for the published boundary below.
 
    Do not run `go mod tidy` after writing the unpublished common pin. Go checks
    required versions during tidy even with `go.work` active, so that boundary is
@@ -64,9 +80,15 @@ delete, recreate, or force-update an existing tag.
    GOPROXY=direct go list -m github.com/agentable/go-requests/browser@vX.Y.Z
    GOPROXY=direct go list -m github.com/agentable/go-requests/fingerprint@vX.Y.Z
    GOPROXY=direct go list -m github.com/agentable/go-requests/http3@vX.Y.Z
-   task verify:all
-   task test:published
+   GOTOOLCHAIN=go1.27.2 task verify:all
+   GOTOOLCHAIN=go1.27.2 task test:published
    ```
+
+   Download the published root with `GOWORK=off GOPROXY=direct go mod download
+   -json github.com/agentable/go-requests@vX.Y.Z` and require its real `Sum` and
+   `GoModSum` to match the precomputed values exactly. Require a clean worktree
+   after all gates, including extension module checksums. Do not repair a
+   published release by committing checksum changes after its tags.
 
    If this post-publication gate finds a release defect, fix it in a new common
    patch release. Published tags remain immutable.

@@ -5,12 +5,12 @@ go 1.27.0
 require (
 	github.com/agentable/go-requests v0.1.22
 	github.com/google/go-cmp v0.7.0
-	github.com/quic-go/quic-go v0.63.0
+	github.com/quic-go/quic-go v0.64.0
 	github.com/test-go/testify v1.1.4
 )
 
 require (
-	github.com/agentable/go-orderedobject v0.3.1 // indirect
+	github.com/agentable/go-orderedobject v0.3.2 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect

@@ -35,6 +35,8 @@ type requestBodyPlan struct {
 	multipart            *Multipart
 	contentType          string
 	generatedContentType bool
+	readerLength         int64
+	hasReaderLength      bool
 }
 
 type requestBodyFormOccurrence struct {
@@ -267,6 +269,22 @@ func (b *RequestBuilder) Reader(r io.Reader, contentType string) *RequestBuilder
 	return b
 }
 
+// SizedReader sets a one-shot raw body with its exact byte length and optional
+// Content-Type. It does not read or snapshot r, even when r is seekable, and
+// never installs a replay callback. The transport owns closing r after delivery.
+// Zero selects an empty body without reading or closing r. A negative length
+// records ErrInvalidConfigValue before reading the body or dispatching the request.
+func (b *RequestBuilder) SizedReader(r io.Reader, contentType string, contentLength int64) *RequestBuilder {
+	if contentLength < 0 {
+		b.setPreparationError(invalidOptionValue("SizedReader.ContentLength"), preparationErrorClassInvalidConfigValue)
+		return b
+	}
+	b.Reader(r, contentType)
+	b.body.readerLength = contentLength
+	b.body.hasReaderLength = true
+	return b
+}
+
 func (b *RequestBuilder) selectBody(body requestBodyPlan) { //nolint:gocritic // Selection is a value-like replacement of builder body state.
 	if b.body.generatedContentType {
 		b.delHeader("Content-Type")
@@ -304,6 +322,12 @@ func prepareBodyFromPlan(body requestBodyPlan, headers http.Header, snap *client
 		reader, err := encodeRawBody(body.value)
 		if err != nil {
 			return preparedRequestBody{}, err
+		}
+		if body.hasReaderLength {
+			if body.readerLength == 0 {
+				reader = http.NoBody
+			}
+			return preparedRequestBody{body: reader, contentLength: body.readerLength, contentType: contentType}, nil
 		}
 		return prepareReaderBody(reader, contentType)
 	case requestBodyForm:

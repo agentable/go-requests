@@ -182,10 +182,8 @@ func (s *deliverySnapshot) openDelivery(ctx context.Context) (*openedDelivery, e
 		}
 		return nil, fmt.Errorf("%w: %w", ErrRequestCreationFailed, sanitizeURLDiagnosticError(err))
 	}
-	if preparedBody.getBody != nil {
-		req.GetBody = preparedBody.getBody
-		req.ContentLength = preparedBody.contentLength
-	}
+	req.GetBody = preparedBody.getBody
+	req.ContentLength = preparedBody.contentLength
 	req = applyPlanAuthAndHeaders(req, s.plan, preparedBody.contentType)
 
 	return &openedDelivery{
@@ -234,6 +232,11 @@ func (d *openedDelivery) do() (*http.Response, int, error) {
 			var err error
 			attempts++
 			resp, err = snap.httpClient.Do(req)
+			if resp != nil && err != nil {
+				// net/http returns both only for a rejected redirect and has
+				// already closed its body. Retain metadata without closing it twice.
+				resp.Body = http.NoBody
+			}
 			diagnosticErr := sanitizeURLDiagnosticError(err)
 
 			if err != nil {
@@ -381,6 +384,8 @@ func (b *RequestBuilder) Send(ctx context.Context) (*Response, error) {
 
 // SendStream sends the request and returns an unbuffered streaming response.
 // Invalid fluent preparation input is returned before any body or transport work.
+// If delivery returns both a response and an error, the returned StreamResponse
+// retains its metadata but is already closed; its body must not be read.
 func (b *RequestBuilder) SendStream(ctx context.Context) (*StreamResponse, error) {
 	if ctx == nil {
 		return nil, ErrRequestCreationFailed
@@ -394,23 +399,19 @@ func (b *RequestBuilder) SendStream(ctx context.Context) (*StreamResponse, error
 		return nil, err
 	}
 
-	resp, attempts, err := opened.do()
+	resp, attempts, err := opened.do() //nolint:bodyclose // StreamResponse owns cleanup; failed delivery is closed below.
 	if err != nil {
-		if opened.cancel != nil {
-			opened.cancel()
-		}
 		if opened.client.logger != nil {
 			opened.client.logger.Errorf("Error executing request: %v", err)
 		}
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
-		return nil, err
 	}
 
 	if resp == nil {
 		if opened.cancel != nil {
 			opened.cancel()
+		}
+		if err != nil {
+			return nil, err
 		}
 		if opened.client.logger != nil {
 			opened.client.logger.Errorf("Response is nil")
@@ -421,7 +422,11 @@ func (b *RequestBuilder) SendStream(ctx context.Context) (*StreamResponse, error
 	response := newStreamResponse(resp, opened.cancel)
 	response.elapsed = time.Since(opened.start)
 	response.attempts = attempts
-	return response, nil
+	if err != nil {
+		_ = response.Close()
+		resp.Body = http.NoBody
+	}
+	return response, err
 }
 
 func canReplayRequestBody(req *http.Request) bool {

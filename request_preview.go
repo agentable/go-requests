@@ -538,6 +538,11 @@ func previewBody(
 		body.presence = PreviewValuePresent
 		body.value = PreviewValue{state: PreviewValueOmitted}
 		body.mediaType = selection.contentType
+		if selection.hasReaderLength {
+			body.length = selection.readerLength
+			body.lengthKnown = true
+			body.replayabilityKnown = true
+		}
 		return body, nil
 	case requestBodyForm:
 		if err := previewCheckpoint(ctx); err != nil {

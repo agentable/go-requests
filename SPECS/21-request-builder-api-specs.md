@@ -602,7 +602,7 @@ Each builder owns one body selection. Every body setter atomically replaces the
 previous selection, so the last setter determines the outbound payload:
 
 - `JSON`, `XML`, `YAML`, and `Text` select their named encoding.
-- `Bytes` and `Reader` select a raw body.
+- `Bytes`, `Reader`, and `SizedReader` select a raw body.
 - `Form`, `FormFields`, and `FormField` select a URL-encoded form.
 - `Multipart` selects the multipart builder.
 
@@ -617,6 +617,16 @@ the body it replaces. `Reader` generates a media type only when its
 `contentType` argument is non-empty and is one-shot unless the reader is
 seekable and sized. Changing `Content-Type` after a typed setter does not change
 which encoder that setter selected.
+
+`SizedReader(r io.Reader, contentType string, contentLength int64)` selects an
+explicitly one-shot raw body with an exact non-negative length, independently of
+replayability. It never reads, seeks, or snapshots the reader and always leaves
+`http.Request.GetBody` nil, including for sized/seekable readers. Negative lengths
+record `ErrInvalidConfigValue` before dispatch; zero sends an empty body. A later
+body setter replaces this length together with the selected source. Preview may
+report the declared length and known non-replayability without consulting the
+reader; Prepare continues to redact its opaque contents. The normal transport
+contract validates actual bytes against a positive declared length.
 
 `Encoder.Encode` returns an `io.Reader` whose complete lifecycle contract is
 reading. The request pipeline reads the value and MUST NOT discover or invoke
