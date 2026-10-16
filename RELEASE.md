@@ -28,6 +28,10 @@ delete, recreate, or force-update an existing tag.
    official `golang.org/x/mod/zip.CreateFromVCS` archive filtering and
    `dirhash.Hash1`, with no temporary source checkout or module proxy. First
    verify its calculation against a directly downloaded published root release.
+   It normalizes Git's `info/attributes` with the same export-ignore and
+   export-subst overrides as `cmd/go`, preserving existing metadata. This is
+   necessary because this repository's distribution attributes otherwise omit
+   files that Go includes in its published module archives.
 
    Pin every extension to the common next version and replace its old root
    checksum entries with these content-derived future checksums. Commit the
