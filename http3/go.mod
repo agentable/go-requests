@@ -3,7 +3,7 @@ module github.com/agentable/go-requests/http3
 go 1.27.0
 
 require (
-	github.com/agentable/go-requests v0.1.22
+	github.com/agentable/go-requests v0.1.23
 	github.com/google/go-cmp v0.7.0
 	github.com/quic-go/quic-go v0.64.0
 	github.com/test-go/testify v1.1.4
