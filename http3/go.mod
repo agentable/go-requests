@@ -1,6 +1,6 @@
 module github.com/agentable/go-requests/http3
 
-go 1.27.0
+go 1.27.2
 
 require (
 	github.com/agentable/go-requests v0.1.23

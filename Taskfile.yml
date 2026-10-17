@@ -64,6 +64,7 @@ vars:
         -exec dirname {} \; | sed 's|^\./||' | sort
 
 env:
+  GOTOOLCHAIN: go1.27.2
   GOBIN: '{{.GOBIN}}'
 
 tasks:
