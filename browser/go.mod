@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	github.com/agentable/go-orderedobject v0.3.3
-	github.com/agentable/go-requests v0.1.24
+	github.com/agentable/go-requests v0.1.25
 	github.com/test-go/testify v1.1.4
 )
 
