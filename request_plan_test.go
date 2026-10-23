@@ -257,7 +257,7 @@ func TestRequestPlanSnapshotsFormValues(t *testing.T) {
 	require.NoError(t, err)
 	builder.DelFormField("a").FormField("b", "later")
 	for _, plan := range []*requestPlan{facts, delivery.plan} {
-		body, err := prepareBodyFromPlan(plan.body, plan.bodyPreflightHeaders(), &delivery.client)
+		body, err := buildDeliveryBody(plan.body, plan.bodyPreflightHeaders(), &delivery.client)
 		require.NoError(t, err)
 		encoded, err := io.ReadAll(body.body)
 		require.NoError(t, err)

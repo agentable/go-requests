@@ -39,7 +39,7 @@ they do not change the zero-value default.
 | Field | Default | Source | Why |
 |---|---|---|---|
 | `RetryPolicy.Max` | `0` (no retries) | `client.go: newClient` | Retries are opt in. Defaulting to >0 would silently re-send POSTs, PUTs, and PATCHes when the body happens to be replayable; that is not a safe assumption to bake into a primitive. |
-| `RetryPolicy.Backoff` | `DefaultBackoffStrategy(1*time.Second)` | `retry.go: DefaultRetryPolicy` | Always populated so callers who set `Max` without thinking about backoff still get a sane delay between attempts. The constant 1 s is short enough for unit tests and long enough to avoid hammering a flapping server. |
+| `RetryPolicy.Backoff` | `ConstantBackoffStrategy(1*time.Second)` | `retry.go: DefaultRetryPolicy` | Always populated so callers who set `Max` without thinking about backoff still get a sane delay between attempts. The constant 1 s is short enough for unit tests and long enough to avoid hammering a flapping server. |
 | `RetryPolicy.ShouldRetry` | `DefaultRetryIf` | `retry.go: DefaultRetryPolicy` | Retries timeout-classified errors, errors containing `*net.OpError`, 408, 429, and 5xx. Deterministic TLS verification errors are not retried. Callers who want stricter behavior must override. |
 | `RetryPolicy.IgnoreRetryAfter` | `false` | `retry.go: RetryPolicy` | `Retry-After` should be honored by default for 429 and 503 responses. Callers can opt out when their latency budget makes backoff authoritative. |
 | Body replay | auto-snapshot for `*bytes.Buffer` and `ReadAt+Seek+Size` readers | `body.go: snapshotReaderBody` | The library opts callers into replay safely (buffer if cheap, refuse otherwise) instead of silently re-sending unreplayable streams. |
@@ -97,7 +97,7 @@ helpers own their wire `Content-Type`.
 | default headers | nil | `client.go: newClient` | No default headers. Callers add `User-Agent`, `Accept`, etc. explicitly. |
 | ordered header intent | nil | `client.go: newClient` | Ordered header intent is opt in; standard transport semantics apply otherwise. |
 | `http.Client.Jar` | nil | `client.go: newClient` | No cookie persistence by default. `WithSession()` enables a `cookiejar.Jar`. |
-| Content-Type inference | none | `body.go: prepareBody` | Request bodies must be explicit: typed helpers set their own content type, while raw/stream bodies may omit it. The library no longer guesses from Go value shape. |
+| Content-Type inference | none | `body.go: buildDeliveryBody` | Request bodies must be explicit: typed helpers set their own content type, while raw/stream bodies may omit it. The library no longer guesses from Go value shape. |
 
 ## Connection Pool
 

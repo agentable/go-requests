@@ -1,6 +1,6 @@
 module github.com/agentable/go-requests/fingerprint
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/agentable/go-requests v0.1.24
@@ -9,7 +9,7 @@ require (
 )
 
 require (
-	github.com/agentable/go-orderedobject v0.3.2 // indirect
+	github.com/agentable/go-orderedobject v0.3.3 // indirect
 	github.com/andybalholm/brotli v1.2.6 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/google/go-querystring v1.2.0 // indirect

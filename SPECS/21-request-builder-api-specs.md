@@ -9,9 +9,9 @@ metadata, body, timeout, middleware, retry, and dispatch behavior.
 
 A builder is created by either:
 
-- `Client.NewRequestBuilder(method, path)`
+- `Client.Request(method, path)`
 - one of the verb helpers: `Get`, `Post`, `Delete`, `Put`, `Patch`, `Options`,
-  `Head`, `Connect`, `Trace`, or `Request(method, path)`
+  `Head`, `Connect`, or `Trace`
 
 A builder remains mutable and reusable. It is a single-owner object; callers
 MUST NOT mutate a builder concurrently with `Preview`, `Prepare`, `Send`, or

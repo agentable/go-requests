@@ -805,7 +805,7 @@ func TestMetadataPrecedencePreservesMiddlewareRetryCadence(t *testing.T) {
 	var middlewareCalls atomic.Int64
 	var transportCalls atomic.Int64
 	client := newTestClient(t,
-		WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+		WithRetry(RetryPolicy{Max: 1, Backoff: ConstantBackoffStrategy(0)}),
 		WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 			status := http.StatusInternalServerError
 			if transportCalls.Add(1) == 2 {
@@ -901,7 +901,7 @@ func TestSendMethodQuery(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// Create a new RequestBuilder for each test case.
-			rb := client.NewRequestBuilder(http.MethodGet, tc.url)
+			rb := client.Request(http.MethodGet, tc.url)
 
 			// If there are additional query params defined, add them.
 			if tc.additionalQPs != nil {
@@ -1987,7 +1987,7 @@ func TestQueryStructWithClient(t *testing.T) {
 	}
 
 	// Send a request to the server using the client and the struct for query parameters
-	resp, err := client.NewRequestBuilder("GET", "/").QueriesStruct(exampleStruct).Send(context.Background())
+	resp, err := client.Request("GET", "/").QueriesStruct(exampleStruct).Send(context.Background())
 	assert.NoError(t, err)
 
 	// Read and verify the response
@@ -3343,7 +3343,7 @@ func TestDefaultRetryOn408And429(t *testing.T) {
 
 		client := newTestClient(t,
 			WithBaseURL(server.URL),
-			WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+			WithRetry(RetryPolicy{Max: 1, Backoff: ConstantBackoffStrategy(0)}),
 		)
 		_, err := client.Get("/").Send(context.Background())
 		assert.NoError(t, err)
@@ -3364,7 +3364,7 @@ func TestDefaultRetryOn408And429(t *testing.T) {
 
 		client := newTestClient(t,
 			WithBaseURL(server.URL),
-			WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+			WithRetry(RetryPolicy{Max: 1, Backoff: ConstantBackoffStrategy(0)}),
 		)
 		_, err := client.Get("/").Send(context.Background())
 		assert.NoError(t, err)
@@ -3387,7 +3387,7 @@ func TestRetryAfterHeader(t *testing.T) {
 
 	client := newTestClient(t,
 		WithBaseURL(server.URL),
-		WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(5 * time.Second)}),
+		WithRetry(RetryPolicy{Max: 1, Backoff: ConstantBackoffStrategy(5 * time.Second)}),
 	)
 	_, err := client.Get("/").Send(context.Background())
 	assert.NoError(t, err)
@@ -3404,7 +3404,7 @@ func TestRequestMaxRetriesZeroOverridesClientDefault(t *testing.T) {
 
 	client := newTestClient(t,
 		WithBaseURL(server.URL),
-		WithRetry(RetryPolicy{Max: 2, Backoff: DefaultBackoffStrategy(0)}),
+		WithRetry(RetryPolicy{Max: 2, Backoff: ConstantBackoffStrategy(0)}),
 	)
 	resp, err := client.Get("/").NoRetry().Send(context.Background())
 	require.NoError(t, err)
@@ -3434,7 +3434,7 @@ func TestRetryReplaysJSON(t *testing.T) {
 
 	client := newTestClient(t,
 		WithBaseURL(server.URL),
-		WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+		WithRetry(RetryPolicy{Max: 1, Backoff: ConstantBackoffStrategy(0)}),
 	)
 	resp, err := client.Post("/").JSON(map[string]string{"message": "hello"}).Send(context.Background())
 	require.NoError(t, err)
@@ -3481,7 +3481,7 @@ func TestRetryReplaysFormAndBytes(t *testing.T) {
 
 			client := newTestClient(t,
 				WithBaseURL(server.URL),
-				WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+				WithRetry(RetryPolicy{Max: 1, Backoff: ConstantBackoffStrategy(0)}),
 			)
 			resp, err := test.build(client).Send(t.Context())
 
@@ -3508,7 +3508,7 @@ func TestRetryRejectsNonReplayableBody(t *testing.T) {
 
 	client := newTestClient(t,
 		WithBaseURL(server.URL),
-		WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+		WithRetry(RetryPolicy{Max: 1, Backoff: ConstantBackoffStrategy(0)}),
 	)
 	body := &io.LimitedReader{R: strings.NewReader("payload"), N: int64(len("payload"))}
 	_, err := client.Post("/").Reader(body, "text/plain").Send(context.Background())
@@ -3531,7 +3531,7 @@ func TestRetryRejectsNonReplayableJSONReader(t *testing.T) {
 
 	client := newTestClient(t,
 		WithBaseURL(server.URL),
-		WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+		WithRetry(RetryPolicy{Max: 1, Backoff: ConstantBackoffStrategy(0)}),
 	)
 	body := &io.LimitedReader{R: strings.NewReader(`{"message":"hello"}`), N: int64(len(`{"message":"hello"}`))}
 	_, err := client.Post("/").
@@ -3616,7 +3616,7 @@ func TestRetryDrainsResponseBodyBeforeRetry(t *testing.T) {
 				Request:    req,
 			}, nil
 		})}),
-		WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+		WithRetry(RetryPolicy{Max: 1, Backoff: ConstantBackoffStrategy(0)}),
 	)
 
 	resp, err := client.Get("http://example.com").Send(t.Context())
@@ -3650,7 +3650,7 @@ func TestRetryDrainsResponseBodyWithLimit(t *testing.T) {
 				Request:    req,
 			}, nil
 		})}),
-		WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+		WithRetry(RetryPolicy{Max: 1, Backoff: ConstantBackoffStrategy(0)}),
 	)
 
 	resp, err := client.Get("http://example.com").Send(t.Context())
@@ -3676,7 +3676,7 @@ func TestRetryCleanupFailureStopsRetry(t *testing.T) {
 				Request:    req,
 			}, nil
 		})}),
-		WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+		WithRetry(RetryPolicy{Max: 1, Backoff: ConstantBackoffStrategy(0)}),
 	)
 
 	resp, err := client.Get("http://example.com").Send(t.Context())
@@ -3720,7 +3720,7 @@ func TestRetrySkipsCleanupForRedirectErrorResponse(t *testing.T) {
 		WithHTTPClient(httpClient),
 		WithRetry(RetryPolicy{
 			Max:     1,
-			Backoff: DefaultBackoffStrategy(0),
+			Backoff: ConstantBackoffStrategy(0),
 			ShouldRetry: func(_ *http.Request, _ *http.Response, err error) bool {
 				return errors.Is(err, redirectErr)
 			},

@@ -521,7 +521,7 @@ func TestNew_WithBearerAuth(t *testing.T) {
 }
 
 func TestNew_WithRetry(t *testing.T) {
-	strategy := DefaultBackoffStrategy(2 * time.Second)
+	strategy := ConstantBackoffStrategy(2 * time.Second)
 	retryIf := func(req *http.Request, resp *http.Response, err error) bool {
 		return resp != nil && resp.StatusCode >= 500
 	}
@@ -538,7 +538,7 @@ func TestNew_WithRetry(t *testing.T) {
 func TestWithoutRetryDisablesEarlierPolicy(t *testing.T) {
 	var attempts atomic.Int32
 	client := newTestClient(t,
-		WithRetry(RetryPolicy{Max: 2, Backoff: DefaultBackoffStrategy(0)}),
+		WithRetry(RetryPolicy{Max: 2, Backoff: ConstantBackoffStrategy(0)}),
 		WithoutRetry(),
 		WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 			attempts.Add(1)

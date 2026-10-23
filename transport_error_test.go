@@ -240,7 +240,7 @@ func TestPublicSendTransportErrorClassification(t *testing.T) {
 						attempts.Add(1)
 						return nil, &net.OpError{Op: "dial", Net: network, Err: cause}
 					}),
-					WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+					WithRetry(RetryPolicy{Max: 1, Backoff: ConstantBackoffStrategy(0)}),
 				)
 				_, err := client.Get("http://dial.test/").Send(t.Context())
 				assert.Equal(t, int32(2), attempts.Load())

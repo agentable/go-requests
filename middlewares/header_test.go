@@ -1,6 +1,7 @@
 package middlewares
 
 import (
+	"errors"
 	"net/http"
 	"testing"
 
@@ -9,7 +10,24 @@ import (
 	"github.com/agentable/go-requests"
 )
 
-func TestHeaderMiddleware(t *testing.T) {
+func TestAddHeadersPreservesNextResult(t *testing.T) {
+	t.Parallel()
+	req, err := http.NewRequest(http.MethodGet, "https://example.test", nil)
+	assert.NoError(t, err)
+	req.Header.Add("X-Value", "existing")
+	wantResponse := &http.Response{StatusCode: http.StatusBadGateway}
+	wantErr := errors.New("downstream failure")
+	handler := AddHeaders(http.Header{"X-Value": {"first", "second"}})(func(got *http.Request) (*http.Response, error) {
+		assert.Same(t, req, got)
+		assert.Equal(t, []string{"existing", "first", "second"}, got.Header.Values("X-Value"))
+		return wantResponse, wantErr
+	})
+	response, err := handler(req)
+	assert.Same(t, wantResponse, response)
+	assert.ErrorIs(t, err, wantErr)
+}
+
+func TestAddHeaders(t *testing.T) {
 	tests := []struct {
 		name           string
 		headers        http.Header
@@ -67,7 +85,7 @@ func TestHeaderMiddleware(t *testing.T) {
 			}
 
 			// Create middleware
-			middleware := HeaderMiddleware(tt.headers)
+			middleware := AddHeaders(tt.headers)
 
 			// Create a mock next handler
 			nextHandler := requests.MiddlewareHandlerFunc(func(req *http.Request) (*http.Response, error) {

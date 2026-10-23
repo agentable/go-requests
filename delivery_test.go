@@ -40,7 +40,7 @@ func TestRetryPolicyControlsTransportErrors(t *testing.T) {
 			})}),
 			WithRetry(RetryPolicy{
 				Max:     2,
-				Backoff: DefaultBackoffStrategy(0),
+				Backoff: ConstantBackoffStrategy(0),
 				ShouldRetry: func(*http.Request, *http.Response, error) bool {
 					return false
 				},
@@ -70,7 +70,7 @@ func TestRetryPolicyControlsTransportErrors(t *testing.T) {
 			})}),
 			WithRetry(RetryPolicy{
 				Max:     2,
-				Backoff: DefaultBackoffStrategy(0),
+				Backoff: ConstantBackoffStrategy(0),
 				ShouldRetry: func(_ *http.Request, _ *http.Response, err error) bool {
 					return err != nil
 				},
@@ -93,7 +93,7 @@ func TestRetryRejectsNonReplayableBodyAfterTransportError(t *testing.T) {
 		})),
 		WithRetry(RetryPolicy{
 			Max:     1,
-			Backoff: DefaultBackoffStrategy(0),
+			Backoff: ConstantBackoffStrategy(0),
 			ShouldRetry: func(*http.Request, *http.Response, error) bool {
 				return true
 			},
@@ -116,7 +116,7 @@ func TestDeliveryPlanSnapshotsPolicyAndDoesNotReadBuilderAfterOpen(t *testing.T)
 	client := newTestClient(t,
 		WithRetry(RetryPolicy{
 			Max:     1,
-			Backoff: DefaultBackoffStrategy(0),
+			Backoff: ConstantBackoffStrategy(0),
 			ShouldRetry: func(_ *http.Request, resp *http.Response, _ error) bool {
 				return resp != nil && resp.StatusCode == http.StatusInternalServerError
 			},
@@ -150,7 +150,7 @@ func TestDeliveryPlanSnapshotsPolicyAndDoesNotReadBuilderAfterOpen(t *testing.T)
 	}
 
 	builder := client.Get("https://example.test/").
-		Retry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0), ShouldRetry: DefaultRetryIf}).
+		Retry(RetryPolicy{Max: 1, Backoff: ConstantBackoffStrategy(0), ShouldRetry: DefaultRetryIf}).
 		Timeout(time.Second)
 	builder.AddMiddleware(requestMiddleware)
 

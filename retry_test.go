@@ -77,7 +77,7 @@ func TestDefaultRetryCancellationStopsDelivery(t *testing.T) {
 			attempts.Add(1)
 			return nil, joinedErr
 		})}),
-		WithRetry(RetryPolicy{Max: 3, Backoff: DefaultBackoffStrategy(0)}),
+		WithRetry(RetryPolicy{Max: 3, Backoff: ConstantBackoffStrategy(0)}),
 	)
 
 	resp, err := client.Get("https://example.com").Send(t.Context())
@@ -138,7 +138,7 @@ func TestRetryAfterDelay(t *testing.T) {
 
 func TestJitterBackoffStrategy(t *testing.T) {
 	t.Run("OutputWithinExpectedBounds", func(t *testing.T) {
-		base := DefaultBackoffStrategy(1 * time.Second)
+		base := ConstantBackoffStrategy(1 * time.Second)
 		jittered := JitterBackoffStrategy(base, 0.25)
 
 		for range 100 {
@@ -149,7 +149,7 @@ func TestJitterBackoffStrategy(t *testing.T) {
 	})
 
 	t.Run("ZeroFractionReturnsBaseDelay", func(t *testing.T) {
-		base := DefaultBackoffStrategy(500 * time.Millisecond)
+		base := ConstantBackoffStrategy(500 * time.Millisecond)
 		jittered := JitterBackoffStrategy(base, 0)
 
 		for range 10 {
@@ -159,7 +159,7 @@ func TestJitterBackoffStrategy(t *testing.T) {
 	})
 
 	t.Run("NegativeFractionReturnsBaseDelay", func(t *testing.T) {
-		base := DefaultBackoffStrategy(500 * time.Millisecond)
+		base := ConstantBackoffStrategy(500 * time.Millisecond)
 		jittered := JitterBackoffStrategy(base, -0.5)
 
 		for range 10 {
@@ -170,7 +170,7 @@ func TestJitterBackoffStrategy(t *testing.T) {
 
 	t.Run("ResultNeverNegative", func(t *testing.T) {
 		// Use a very high fraction to try to produce negative results.
-		base := DefaultBackoffStrategy(10 * time.Millisecond)
+		base := ConstantBackoffStrategy(10 * time.Millisecond)
 		jittered := JitterBackoffStrategy(base, 2.0)
 
 		for range 1000 {
@@ -195,8 +195,8 @@ func TestJitterBackoffStrategy(t *testing.T) {
 	})
 }
 
-func TestDefaultBackoffStrategy(t *testing.T) {
-	strategy := DefaultBackoffStrategy(2 * time.Second)
+func TestConstantBackoffStrategy(t *testing.T) {
+	strategy := ConstantBackoffStrategy(2 * time.Second)
 	assert.Equal(t, 2*time.Second, strategy(0))
 	assert.Equal(t, 2*time.Second, strategy(5))
 }

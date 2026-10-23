@@ -104,7 +104,7 @@ var (
 	// configured limit. Wrapped errors include the observed limit.
 	ErrTooManyRedirects = errors.New("too many redirects")
 
-	// ErrRedirectNotAllowed is returned by [RedirectSpecifiedDomainPolicy]
+	// ErrRedirectNotAllowed is returned by [HostRedirectPolicy]
 	// when the redirect target host is not in the allow-list.
 	ErrRedirectNotAllowed = errors.New("redirect not allowed")
 

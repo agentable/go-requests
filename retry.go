@@ -11,8 +11,8 @@ import (
 // BackoffStrategy defines a function that returns the delay before the next retry.
 type BackoffStrategy func(attempt int) time.Duration
 
-// DefaultBackoffStrategy provides a simple constant delay between retries.
-func DefaultBackoffStrategy(delay time.Duration) func(int) time.Duration {
+// ConstantBackoffStrategy provides a simple constant delay between retries.
+func ConstantBackoffStrategy(delay time.Duration) func(int) time.Duration {
 	return func(_ int) time.Duration {
 		return delay
 	}
@@ -67,7 +67,7 @@ type RetryPolicy struct {
 // DefaultRetryPolicy returns the default retry behavior with retries disabled.
 func DefaultRetryPolicy() RetryPolicy {
 	return RetryPolicy{
-		Backoff:     DefaultBackoffStrategy(time.Second),
+		Backoff:     ConstantBackoffStrategy(time.Second),
 		ShouldRetry: DefaultRetryIf,
 	}
 }
@@ -77,7 +77,7 @@ func (p RetryPolicy) normalize() RetryPolicy {
 		p.Max = 0
 	}
 	if p.Backoff == nil {
-		p.Backoff = DefaultBackoffStrategy(time.Second)
+		p.Backoff = ConstantBackoffStrategy(time.Second)
 	}
 	if p.ShouldRetry == nil {
 		p.ShouldRetry = DefaultRetryIf

@@ -129,8 +129,8 @@ returns a byte-slice copy, and `Response.Header()` returns a header snapshot.
 
 The arbitrary-method entry point is `Client.Request(method, path)`.
 
-- **Why**: Method-first order matches `NewRequestBuilder(method, path)` and
-  standard HTTP language.
+- **Why**: Method-first order matches standard HTTP language; one constructor owns
+  builder initialization for both arbitrary methods and verb helpers.
 - **Rejected**: `Custom(path, method)` or aliases that preserve two grammars for
   one operation.
 - **Contract Impact**: Public request syntax is either a verb helper such as

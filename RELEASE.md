@@ -18,7 +18,7 @@ delete, recreate, or force-update an existing tag.
 
    ```bash
    task deps:update
-   GOTOOLCHAIN=go1.27.2 task verify:all
+   GOTOOLCHAIN=go1.27.3 task verify:all
    ```
 
 2. Commit the verified implementation, freezing every file included in the root
@@ -95,8 +95,8 @@ delete, recreate, or force-update an existing tag.
    GOPROXY=direct go list -m github.com/agentable/go-requests/browser@vX.Y.Z
    GOPROXY=direct go list -m github.com/agentable/go-requests/fingerprint@vX.Y.Z
    GOPROXY=direct go list -m github.com/agentable/go-requests/http3@vX.Y.Z
-   GOWORK=off GOTOOLCHAIN=go1.27.2 task verify:all
-   GOWORK=off GOTOOLCHAIN=go1.27.2 task test:published
+   GOWORK=off GOTOOLCHAIN=go1.27.3 task verify:all
+   GOWORK=off GOTOOLCHAIN=go1.27.3 task test:published
    ```
 
    Download the published root with `GOWORK=off GOPROXY=direct go mod download

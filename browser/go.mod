@@ -1,9 +1,9 @@
 module github.com/agentable/go-requests/browser
 
-go 1.27.2
+go 1.27.3
 
 require (
-	github.com/agentable/go-orderedobject v0.3.2
+	github.com/agentable/go-orderedobject v0.3.3
 	github.com/agentable/go-requests v0.1.24
 	github.com/test-go/testify v1.1.4
 )

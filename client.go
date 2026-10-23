@@ -387,50 +387,54 @@ func (c *Client) setLogger(logger Logger) *Client {
 
 // Get initiates a GET request.
 func (c *Client) Get(path string) *RequestBuilder {
-	return c.NewRequestBuilder(http.MethodGet, path)
+	return c.Request(http.MethodGet, path)
 }
 
 // Post initiates a POST request.
 func (c *Client) Post(path string) *RequestBuilder {
-	return c.NewRequestBuilder(http.MethodPost, path)
+	return c.Request(http.MethodPost, path)
 }
 
 // Delete initiates a DELETE request.
 func (c *Client) Delete(path string) *RequestBuilder {
-	return c.NewRequestBuilder(http.MethodDelete, path)
+	return c.Request(http.MethodDelete, path)
 }
 
 // Put initiates a PUT request.
 func (c *Client) Put(path string) *RequestBuilder {
-	return c.NewRequestBuilder(http.MethodPut, path)
+	return c.Request(http.MethodPut, path)
 }
 
 // Patch initiates a PATCH request.
 func (c *Client) Patch(path string) *RequestBuilder {
-	return c.NewRequestBuilder(http.MethodPatch, path)
+	return c.Request(http.MethodPatch, path)
 }
 
 // Options initiates an OPTIONS request.
 func (c *Client) Options(path string) *RequestBuilder {
-	return c.NewRequestBuilder(http.MethodOptions, path)
+	return c.Request(http.MethodOptions, path)
 }
 
 // Head initiates a HEAD request.
 func (c *Client) Head(path string) *RequestBuilder {
-	return c.NewRequestBuilder(http.MethodHead, path)
+	return c.Request(http.MethodHead, path)
 }
 
 // Connect initiates a CONNECT request.
 func (c *Client) Connect(path string) *RequestBuilder {
-	return c.NewRequestBuilder(http.MethodConnect, path)
+	return c.Request(http.MethodConnect, path)
 }
 
 // Trace initiates a TRACE request.
 func (c *Client) Trace(path string) *RequestBuilder {
-	return c.NewRequestBuilder(http.MethodTrace, path)
+	return c.Request(http.MethodTrace, path)
 }
 
-// Request initiates a request with method and path.
+// Request creates a builder for method and path without starting delivery.
 func (c *Client) Request(method, path string) *RequestBuilder {
-	return c.NewRequestBuilder(method, path)
+	return &RequestBuilder{
+		client: c,
+		method: method,
+		target: newRequestTarget(path),
+	}
 }

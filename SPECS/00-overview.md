@@ -34,7 +34,7 @@ lifecycle that the other `SPECS/*.md` files refine.
 ## Request Lifecycle
 
 1. Construct a client with `New`.
-2. Create a builder with `NewRequestBuilder` or an HTTP verb helper such as `Get` or `Post`.
+2. Create a builder with `Request(method, path)` or an HTTP verb helper such as `Get` or `Post`.
 3. Populate request-local state on the builder.
 4. Optionally call `Preview(ctx)` to obtain a detached structural projection.
    Preview does not send, consume, or freeze the builder, and it does not run

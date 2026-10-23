@@ -137,7 +137,7 @@ func TestCancelDuringRetryBackoff(t *testing.T) {
 
 	client := newTestClient(t,
 		WithBaseURL(server.URL),
-		WithRetry(RetryPolicy{Max: 5, Backoff: DefaultBackoffStrategy(2 * time.Second)}),
+		WithRetry(RetryPolicy{Max: 5, Backoff: ConstantBackoffStrategy(2 * time.Second)}),
 	)
 
 	go func() {

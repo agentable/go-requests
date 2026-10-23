@@ -1,6 +1,7 @@
 package middlewares
 
 import (
+	"errors"
 	"net/http"
 	"testing"
 
@@ -9,7 +10,24 @@ import (
 	"github.com/agentable/go-requests"
 )
 
-func TestCookieMiddleware(t *testing.T) {
+func TestAddCookiesPreservesDuplicatesAndNextResult(t *testing.T) {
+	t.Parallel()
+	req, err := http.NewRequest(http.MethodGet, "https://example.test", nil)
+	assert.NoError(t, err)
+	req.AddCookie(&http.Cookie{Name: "session", Value: "existing"})
+	wantResponse := &http.Response{StatusCode: http.StatusBadGateway}
+	wantErr := errors.New("downstream failure")
+	handler := AddCookies([]*http.Cookie{{Name: "session", Value: "added"}})(func(got *http.Request) (*http.Response, error) {
+		assert.Same(t, req, got)
+		assert.Equal(t, []*http.Cookie{{Name: "session", Value: "existing"}, {Name: "session", Value: "added"}}, got.Cookies())
+		return wantResponse, wantErr
+	})
+	response, err := handler(req)
+	assert.Same(t, wantResponse, response)
+	assert.ErrorIs(t, err, wantErr)
+}
+
+func TestAddCookies(t *testing.T) {
 	tests := []struct {
 		name            string
 		cookies         []*http.Cookie
@@ -56,7 +74,7 @@ func TestCookieMiddleware(t *testing.T) {
 			}
 
 			// Create middleware
-			middleware := CookieMiddleware(tt.cookies)
+			middleware := AddCookies(tt.cookies)
 
 			// Create a mock next handler
 			nextHandler := requests.MiddlewareHandlerFunc(func(req *http.Request) (*http.Response, error) {

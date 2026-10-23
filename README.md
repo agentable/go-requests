@@ -38,7 +38,7 @@ A fluent HTTP client library for Go that builds, inspects, and delivers requests
 go get github.com/agentable/go-requests
 ```
 
-Requires **Go 1.27.2+**.
+Requires **Go 1.27.3+**.
 
 Optional extension modules:
 
@@ -720,7 +720,7 @@ client, err := requests.New(
 )
 ```
 
-Use `NewProhibitRedirectPolicy` or `NewRedirectSpecifiedDomainPolicy` when you
+Use `NewProhibitRedirectPolicy` or `NewHostRedirectPolicy` when you
 need to reject all redirects or restrict destination hosts. `net/http` owns
 redirect method, body, Referer, Cookie, and payload-header transitions.
 `NewAllowRedirectPolicy` additionally keeps initial sensitive credentials only
@@ -878,8 +878,8 @@ headers.Set("X-Client", "requests")
 
 client, err := requests.New(
 	requests.WithMiddleware(
-		middlewares.HeaderMiddleware(headers),
-		middlewares.CookieMiddleware([]*http.Cookie{{Name: "session", Value: "abc"}}),
+		middlewares.AddHeaders(headers),
+		middlewares.AddCookies([]*http.Cookie{{Name: "session", Value: "abc"}}),
 	),
 )
 if err != nil {

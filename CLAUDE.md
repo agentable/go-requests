@@ -79,6 +79,8 @@ The root module is `github.com/agentable/go-requests`. Extension modules are ind
 - Prefer the standard library, `net/http`, and existing project helpers before new abstractions.
 - Keep edits surgical; do not combine feature work, docs cleanup, dependency changes, and release work unless the task asks for it.
 - Preserve the request language: verb helpers for common methods, `Request(method, path)` for arbitrary methods.
+- Keep `Client.Request` as the single builder constructor. Delivery body materialization belongs to `buildDeliveryBody`; it is separate from the non-consuming `Prepare` projection and the close-once `deliveryBody` owner.
+- Name middleware by its mutation (`AddHeaders`, `AddCookies`) and constant retry delay by its behavior (`ConstantBackoffStrategy`). `HostRedirectPolicy` is an exact host allowlist, not a registrable-domain or subdomain policy.
 - Treat `UnsafeHTTPClient` and `Raw` methods as explicit mutable escape hatches, not normal integration paths.
 - Prove behavior with focused tests first, then run the smallest wider gate that covers the changed surface.
 - Do not create policy-only scripts or tests that merely mirror SPECS without proving runtime behavior.

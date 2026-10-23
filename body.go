@@ -56,7 +56,8 @@ func (p requestBodyPlan) formAllPublic() bool { //nolint:gocritic // Plans are v
 	return true
 }
 
-type preparedRequestBody struct {
+// requestBody holds the delivery reader and its metadata; the reader may still stream.
+type requestBody struct {
 	body          io.Reader
 	getBody       func() (io.ReadCloser, error)
 	contentLength int64
@@ -295,25 +296,17 @@ func (b *RequestBuilder) selectBody(body requestBodyPlan) { //nolint:gocritic //
 	}
 }
 
-func (b *RequestBuilder) prepareBody(snap *clientSnapshot) (preparedRequestBody, error) {
-	headers := b.compatibilityHeaders()
-	if headers == nil {
-		headers = &http.Header{}
-	}
-	return prepareBodyFromPlan(b.body, *headers, snap)
-}
-
-func prepareBodyFromPlan(body requestBodyPlan, headers http.Header, snap *clientSnapshot) (preparedRequestBody, error) { //nolint:gocritic // The plan is a detached, value-like delivery snapshot.
+func buildDeliveryBody(body requestBodyPlan, headers http.Header, snap *clientSnapshot) (requestBody, error) { //nolint:gocritic // The plan is a detached, value-like delivery snapshot.
 	contentType := headers.Get("Content-Type")
 	switch body.kind {
 	case requestBodyNone:
-		return preparedRequestBody{}, nil
+		return requestBody{}, nil
 	case requestBodyJSON:
-		return prepareEncodedBodyValue(body.value, contentType, snap.jsonEncoder.Encode)
+		return encodeDeliveryBody(body.value, contentType, snap.jsonEncoder.Encode)
 	case requestBodyXML:
-		return prepareEncodedBodyValue(body.value, contentType, snap.xmlEncoder.Encode)
+		return encodeDeliveryBody(body.value, contentType, snap.xmlEncoder.Encode)
 	case requestBodyYAML:
-		return prepareEncodedBodyValue(body.value, contentType, snap.yamlEncoder.Encode)
+		return encodeDeliveryBody(body.value, contentType, snap.yamlEncoder.Encode)
 	case requestBodyText:
 		return replayableRequestBody([]byte(body.value.(string)), contentType), nil
 	case requestBodyBytes:
@@ -321,15 +314,15 @@ func prepareBodyFromPlan(body requestBodyPlan, headers http.Header, snap *client
 	case requestBodyReader:
 		reader, err := encodeRawBody(body.value)
 		if err != nil {
-			return preparedRequestBody{}, err
+			return requestBody{}, err
 		}
 		if body.hasReaderLength {
 			if body.readerLength == 0 {
 				reader = http.NoBody
 			}
-			return preparedRequestBody{body: reader, contentLength: body.readerLength, contentType: contentType}, nil
+			return requestBody{body: reader, contentLength: body.readerLength, contentType: contentType}, nil
 		}
-		return prepareReaderBody(reader, contentType)
+		return readerDeliveryBody(reader, contentType)
 	case requestBodyForm:
 		values := make(url.Values, len(body.formOccurrences))
 		for _, field := range body.formOccurrences {
@@ -339,48 +332,48 @@ func prepareBodyFromPlan(body requestBodyPlan, headers http.Header, snap *client
 	case requestBodyMultipart:
 		reader, generatedContentType, err := body.multipart.reader()
 		if err != nil {
-			return preparedRequestBody{}, err
+			return requestBody{}, err
 		}
 		if !body.generatedContentType {
 			generatedContentType = ""
 		}
 		if !body.multipart.canReplay {
-			return preparedRequestBody{body: reader, contentType: generatedContentType}, nil
+			return requestBody{body: reader, contentType: generatedContentType}, nil
 		}
 		data, err := io.ReadAll(reader)
 		if err != nil {
-			return preparedRequestBody{}, fmt.Errorf("read replayable multipart body: %w", err)
+			return requestBody{}, fmt.Errorf("read replayable multipart body: %w", err)
 		}
 		return replayableRequestBody(data, generatedContentType), nil
 	default:
-		return preparedRequestBody{}, fmt.Errorf("%w: unknown body selection", ErrInvalidConfigValue)
+		return requestBody{}, fmt.Errorf("%w: unknown body selection", ErrInvalidConfigValue)
 	}
 }
 
-func prepareEncodedBodyValue(
+func encodeDeliveryBody(
 	value any,
 	contentType string,
 	encode func(any) (io.Reader, error),
-) (preparedRequestBody, error) {
+) (requestBody, error) {
 	if contentType == "" {
-		return preparedRequestBody{}, fmt.Errorf("%w: missing Content-Type", ErrUnsupportedContentType)
+		return requestBody{}, fmt.Errorf("%w: missing Content-Type", ErrUnsupportedContentType)
 	}
 	body, err := encode(value)
 	if err != nil {
-		return preparedRequestBody{}, err
+		return requestBody{}, err
 	}
 	data, err := io.ReadAll(body)
 	if err != nil {
-		return preparedRequestBody{}, fmt.Errorf("read encoded request body: %w", err)
+		return requestBody{}, fmt.Errorf("read encoded request body: %w", err)
 	}
 	return replayableRequestBody(data, contentType), nil
 }
 
-func prepareReaderBody(body io.Reader, contentType string) (preparedRequestBody, error) {
-	prepared := preparedRequestBody{body: body, contentType: contentType}
+func readerDeliveryBody(body io.Reader, contentType string) (requestBody, error) {
+	prepared := requestBody{body: body, contentType: contentType}
 	data, ok, err := snapshotReaderBody(body)
 	if err != nil {
-		return preparedRequestBody{}, err
+		return requestBody{}, err
 	}
 	if !ok {
 		return prepared, nil
@@ -393,9 +386,9 @@ func prepareReaderBody(body io.Reader, contentType string) (preparedRequestBody,
 	return prepared, nil
 }
 
-func replayableRequestBody(data []byte, contentType string) preparedRequestBody {
+func replayableRequestBody(data []byte, contentType string) requestBody {
 	data = bytes.Clone(data)
-	return preparedRequestBody{
+	return requestBody{
 		body:          bytes.NewReader(data),
 		contentLength: int64(len(data)),
 		contentType:   contentType,

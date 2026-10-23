@@ -75,12 +75,12 @@ other joined classifications, so an error that contains both
 
 The package defines:
 
-- `DefaultBackoffStrategy`
+- `ConstantBackoffStrategy`
 - `LinearBackoffStrategy`
 - `ExponentialBackoffStrategy`
 - `JitterBackoffStrategy`
 
-Backoff strategies receive a zero-based retry attempt index. If `RetryPolicy.Backoff` is nil, delivery uses `DefaultBackoffStrategy(1*time.Second)`.
+Backoff strategies receive a zero-based retry attempt index. If `RetryPolicy.Backoff` is nil, delivery uses `ConstantBackoffStrategy(1*time.Second)`.
 
 ## Retry-After Handling
 

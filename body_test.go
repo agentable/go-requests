@@ -16,13 +16,15 @@ import (
 	"github.com/test-go/testify/require"
 )
 
-func TestPrepareBodyWithFormFields(t *testing.T) {
+func TestDeliveryBodyWithFormFields(t *testing.T) {
 	builder := newTestClient(t).Post("/").Form(url.Values{
 		"name": {"Jane Doe"},
 		"age":  {"32"},
 	})
 
-	body, err := builder.prepareBody(&clientSnapshot{})
+	snapshot, err := builder.compileDeliverySnapshot()
+	require.NoError(t, err)
+	body, err := buildDeliveryBody(snapshot.plan.body, snapshot.plan.bodyPreflightHeaders(), &snapshot.client)
 	require.NoError(t, err)
 	assert.Equal(t, "application/x-www-form-urlencoded", body.contentType)
 
@@ -251,7 +253,9 @@ func TestFormClonesCallerValues(t *testing.T) {
 			builder := newTestClient(t).Post("/").Form(input)
 			mutate()
 
-			body, err := builder.prepareBody(&clientSnapshot{})
+			snapshot, err := builder.compileDeliverySnapshot()
+			require.NoError(t, err)
+			body, err := buildDeliveryBody(snapshot.plan.body, snapshot.plan.bodyPreflightHeaders(), &snapshot.client)
 			require.NoError(t, err)
 			data, err := io.ReadAll(body.body)
 			require.NoError(t, err)

@@ -43,8 +43,8 @@ readers or guarantee interruption of an arbitrary borrowed reader's `Read`.
 
 The `middlewares` package defines:
 
-- `HeaderMiddleware`, which adds headers to every request it wraps
-- `CookieMiddleware`, which adds cookies to every request it wraps
+- `AddHeaders`, which adds headers to every request it wraps
+- `AddCookies`, which adds cookies to every request it wraps
 
 ## Mutation Contract
 

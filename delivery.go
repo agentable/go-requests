@@ -161,7 +161,7 @@ func (s *deliverySnapshot) openDelivery(ctx context.Context) (*openedDelivery, e
 			cancel()
 		}
 	}
-	preparedBody, err := prepareBodyFromPlan(
+	preparedBody, err := buildDeliveryBody(
 		s.plan.body,
 		s.plan.bodyPreflightHeaders(),
 		&s.client,

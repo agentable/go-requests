@@ -300,10 +300,10 @@ func TestRedirectPolicies(t *testing.T) {
 		assert.EqualError(t, err, "Get \"/redirect-2\": stopped after 1 redirects: too many redirects")
 	})
 
-	t.Run("RedirectSpecifiedDomainPolicy", func(t *testing.T) {
+	t.Run("HostRedirectPolicy", func(t *testing.T) {
 		client := newTestClient(t, WithBaseURL(ts.URL))
 		host := "127.0.0.1"
-		client.setRedirectPolicy(NewRedirectSpecifiedDomainPolicy(host))
+		client.setRedirectPolicy(NewHostRedirectPolicy(host))
 
 		resp, err := client.Get("/redirect-1").Send(context.Background())
 
@@ -311,15 +311,41 @@ func TestRedirectPolicies(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode(), "Expected status code to be 200")
 	})
 
-	t.Run("RedirectSpecifiedDomainPolicy-ProhibitDomain", func(t *testing.T) {
+	t.Run("HostRedirectPolicy-ProhibitDomain", func(t *testing.T) {
 		client := newTestClient(t)
-		client.setRedirectPolicy(NewRedirectSpecifiedDomainPolicy("other.domain.com"))
+		client.setRedirectPolicy(NewHostRedirectPolicy("other.domain.com"))
 
 		_, err := client.Get(ts.URL + "/redirect-1").Send(context.Background())
 
 		assert.Error(t, err, "Expected domain restriction error")
 		assert.EqualError(t, err, "Get \"/redirect-2\": redirect not allowed", "Expected domain not allowed error")
 	})
+}
+
+func TestHostRedirectPolicyMatchesExactHost(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		hosts  []string
+		target string
+		allow  bool
+	}{
+		{name: "case and port", hosts: []string{"EXAMPLE.COM"}, target: "https://example.com:8443/path", allow: true},
+		{name: "no implicit subdomain", hosts: []string{"example.com"}, target: "https://sub.example.com/path"},
+		{name: "empty list", target: "https://example.com/path"},
+		{name: "IPv4", hosts: []string{"127.0.0.1"}, target: "http://127.0.0.1:8080/path", allow: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, test.target, nil)
+			require.NoError(t, err)
+			err = NewHostRedirectPolicy(test.hosts...).Apply(req, nil)
+			if test.allow {
+				assert.NoError(t, err)
+			} else {
+				assert.ErrorIs(t, err, ErrRedirectNotAllowed)
+			}
+		})
+	}
 }
 
 func TestRedirectPolicyUsesExampleHost(t *testing.T) {
@@ -340,7 +366,7 @@ func TestRedirectPolicyUsesExampleHost(t *testing.T) {
 	client := newTestClient(t,
 		WithBaseURL("https://api.example.com"),
 		WithHTTPClient(ts.Client()),
-		WithRedirectPolicy(NewRedirectSpecifiedDomainPolicy("api.example.com")),
+		WithRedirectPolicy(NewHostRedirectPolicy("api.example.com")),
 	)
 
 	resp, err := client.Get("/redirect").Send(t.Context())
@@ -359,7 +385,7 @@ func TestRedirectPolicyRejectsDifferentExampleHost(t *testing.T) {
 	client := newTestClient(t,
 		WithBaseURL("https://api.example.com"),
 		WithHTTPClient(ts.Client()),
-		WithRedirectPolicy(NewRedirectSpecifiedDomainPolicy("api.example.com")),
+		WithRedirectPolicy(NewHostRedirectPolicy("api.example.com")),
 	)
 
 	_, err := client.Get("/redirect").Send(t.Context())

@@ -236,7 +236,7 @@ The built-in policies are:
 
 - `NewProhibitRedirectPolicy`
 - `NewAllowRedirectPolicy`
-- `NewRedirectSpecifiedDomainPolicy`
+- `NewHostRedirectPolicy`
 
 Multiple redirect policies MAY be composed in one `WithRedirectPolicy` call. They run in argument order and the first error stops redirect processing.
 

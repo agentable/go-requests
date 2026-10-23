@@ -392,7 +392,7 @@ func TestRetryRotatesProxy(t *testing.T) {
 	client := newTestClient(t,
 		WithBaseURL(server.URL),
 		WithProxies(p1.URL, p2.URL),
-		WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+		WithRetry(RetryPolicy{Max: 1, Backoff: ConstantBackoffStrategy(0)}),
 	)
 
 	resp, err := client.Get("/").Send(t.Context())

@@ -208,7 +208,7 @@ func TestMultipartReplayableBuffersBody(t *testing.T) {
 
 	client := newTestClient(t,
 		WithBaseURL(server.URL),
-		WithRetry(RetryPolicy{Max: 1, Backoff: DefaultBackoffStrategy(0)}),
+		WithRetry(RetryPolicy{Max: 1, Backoff: ConstantBackoffStrategy(0)}),
 	)
 	resp, err := client.Post("/").Multipart(body).Send(t.Context())
 	require.NoError(t, err)

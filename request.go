@@ -147,15 +147,6 @@ func sanitizeDiagnosticURL(rawURL string) string {
 	return clone.String()
 }
 
-// NewRequestBuilder creates a new RequestBuilder with default settings.
-func (c *Client) NewRequestBuilder(method, path string) *RequestBuilder {
-	return &RequestBuilder{
-		client: c,
-		method: method,
-		target: newRequestTarget(path),
-	}
-}
-
 // AddMiddleware adds a middleware to the request.
 func (b *RequestBuilder) AddMiddleware(middlewares ...Middleware) {
 	if err := validateMiddlewares(middlewares); err != nil {
@@ -471,13 +462,6 @@ func (b *RequestBuilder) DelCookie(key ...string) *RequestBuilder {
 	b.metadata.deleteCookies(key...)
 
 	return b
-}
-
-// compatibilityHeaders exposes the detached semantic header view used by the
-// legacy body preparation helper. Disclosure state remains in metadata.
-func (b *RequestBuilder) compatibilityHeaders() *http.Header {
-	values := b.metadata.headerValues()
-	return &values
 }
 
 func stringSet(values []string) map[string]struct{} {

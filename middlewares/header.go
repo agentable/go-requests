@@ -6,8 +6,8 @@ import (
 	"github.com/agentable/go-requests"
 )
 
-// HeaderMiddleware creates a middleware that adds the specified headers to each request.
-func HeaderMiddleware(headers http.Header) requests.Middleware {
+// AddHeaders creates a middleware that adds the specified headers to each request.
+func AddHeaders(headers http.Header) requests.Middleware {
 	return func(next requests.MiddlewareHandlerFunc) requests.MiddlewareHandlerFunc {
 		return func(req *http.Request) (*http.Response, error) {
 			for key, values := range headers {

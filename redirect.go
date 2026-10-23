@@ -68,22 +68,22 @@ func hostname(host string) string {
 	return strings.ToLower(host)
 }
 
-// RedirectSpecifiedDomainPolicy is a redirect policy that checks if the redirect is allowed based on the hostnames.
-type RedirectSpecifiedDomainPolicy struct {
+// HostRedirectPolicy allows redirects only to explicitly listed hosts.
+type HostRedirectPolicy struct {
 	allowedHosts map[string]bool
 }
 
-// NewRedirectSpecifiedDomainPolicy creates a new RedirectSpecifiedDomainPolicy that only allows redirects to the specified domains.
-func NewRedirectSpecifiedDomainPolicy(domains ...string) *RedirectSpecifiedDomainPolicy {
-	hosts := make(map[string]bool, len(domains))
-	for _, h := range domains {
-		hosts[strings.ToLower(h)] = true
+// NewHostRedirectPolicy creates an exact host allowlist; subdomains are not implied.
+func NewHostRedirectPolicy(hosts ...string) *HostRedirectPolicy {
+	allowed := make(map[string]bool, len(hosts))
+	for _, host := range hosts {
+		allowed[strings.ToLower(host)] = true
 	}
-	return &RedirectSpecifiedDomainPolicy{allowedHosts: hosts}
+	return &HostRedirectPolicy{allowedHosts: allowed}
 }
 
-// Apply checks if the redirect target domain is in the allowed domains list.
-func (s *RedirectSpecifiedDomainPolicy) Apply(req *http.Request, _ []*http.Request) error {
+// Apply checks whether the redirect target matches an allowed host.
+func (s *HostRedirectPolicy) Apply(req *http.Request, _ []*http.Request) error {
 	if !s.allowedHosts[hostname(req.URL.Host)] {
 		return ErrRedirectNotAllowed
 	}
