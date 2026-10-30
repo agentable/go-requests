@@ -450,20 +450,23 @@ func headerCookies(headers http.Header) []*http.Cookie {
 func compileCookieOccurrences(client, request requestMetadata) []requestCookieOccurrence {
 	clientHeaders := client.headers
 	requestHeaders := request.headers
-	result := make([]requestCookieOccurrence, 0)
+	layers := make([][]requestCookieOccurrence, 0, 4)
 	appendCookieLayer := func(values []*http.Cookie) {
+		layer := make([]requestCookieOccurrence, 0, len(values))
 		for _, cookie := range values {
 			if cookie == nil {
 				continue
 			}
-			result = append(result, requestCookieOccurrence{
+			layer = append(layer, requestCookieOccurrence{
 				name:   cookie.Name,
 				value:  privateRequestValue(cookie.Value),
 				cookie: cloneCookie(cookie),
 			})
 		}
+		layers = append(layers, layer)
 	}
 	appendTaggedCookieLayer := func(values []requestCookieOccurrence) {
+		layer := make([]requestCookieOccurrence, 0, len(values))
 		for _, occurrence := range values {
 			cookie := cloneCookie(occurrence.cookie) //nolint:gosec // This is an outbound request cookie clone.
 			if cookie == nil {
@@ -471,30 +474,37 @@ func compileCookieOccurrences(client, request requestMetadata) []requestCookieOc
 			}
 			cookie.Name = occurrence.name
 			cookie.Value = occurrence.value.rawValue()
-			result = append(result, requestCookieOccurrence{
+			layer = append(layer, requestCookieOccurrence{
 				name:   occurrence.name,
 				value:  occurrence.value,
 				cookie: cookie,
 			})
 		}
+		layers = append(layers, layer)
 	}
 	appendCookieLayer(headerCookies(requestOccurrencesHeaderValues(clientHeaders)))
 	appendTaggedCookieLayer(client.cookies)
 	appendCookieLayer(headerCookies(requestOccurrencesHeaderValues(requestHeaders)))
 	appendTaggedCookieLayer(request.cookies)
-	return mergeCookieOccurrences(result)
+	return mergeCookieOccurrences(layers...)
 }
 
-func mergeCookieOccurrences(values []requestCookieOccurrence) []requestCookieOccurrence {
-	result := make([]requestCookieOccurrence, 0, len(values))
-	positions := make(map[string]int, len(values))
-	for _, occurrence := range values {
-		if position, ok := positions[occurrence.name]; ok {
-			result[position] = occurrence
-			continue
+func mergeCookieOccurrences(layers ...[]requestCookieOccurrence) []requestCookieOccurrence {
+	lastLayer := make(map[string]int)
+	for i, layer := range layers {
+		for _, occurrence := range layer {
+			lastLayer[occurrence.name] = i
 		}
-		positions[occurrence.name] = len(result)
-		result = append(result, occurrence)
+	}
+
+	// Select the winning layer, retaining all of its same-name occurrences.
+	var result []requestCookieOccurrence
+	for i, layer := range layers {
+		for _, occurrence := range layer {
+			if lastLayer[occurrence.name] == i {
+				result = append(result, occurrence)
+			}
+		}
 	}
 	return result
 }

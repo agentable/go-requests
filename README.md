@@ -411,8 +411,11 @@ resp, err := client.Get("/articles").
 Default `net/http` transports preserve header semantics. Transports that explicitly read `requests.OrderedHeaders(req)` can use the metadata for wire-order delivery.
 
 Fluent dispatch has one metadata precedence rule: client headers < client auth
-< request headers < request auth. Request cookies replace same-name client
-cookies while preserving other client defaults. Existing ordered entries are
+< request headers < request auth. Cookie sources apply in order: client
+`Cookie` headers < `WithCookies` defaults < request `Cookie` headers < explicit
+`Cookie` / `CookieValue` calls. For each case-sensitive name, the winning source
+preserves all its occurrences in order, including repeated names. Repeated
+`WithCookies` options replace same-name defaults. Existing ordered entries are
 synchronized to the final semantic header values; pseudo-header intent is
 preserved separately.
 

@@ -299,6 +299,7 @@ func (c *Client) setDefaultCookie(name, value string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.metadata.deleteCookies(name)
 	c.metadata.addCookie(name, privateRequestValue(value))
 }
 

@@ -147,7 +147,7 @@ func (h PreparedHeader) Values() []PreparedString {
 	return clonePreparedStrings(h.values)
 }
 
-// PreparedCookie contains one merged cookie occurrence.
+// PreparedCookie contains one effective cookie occurrence.
 type PreparedCookie struct {
 	name  string
 	value PreparedString
@@ -271,7 +271,7 @@ func (p *RequestPreparation) OrderedHeaders() []PreparedHeader {
 	return clonePreparedHeaders(p.orderedHeaders)
 }
 
-// Cookies returns detached merged cookie occurrences.
+// Cookies returns detached cookie occurrences in source precedence order.
 func (p *RequestPreparation) Cookies() []PreparedCookie {
 	if p == nil {
 		return nil

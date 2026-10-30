@@ -437,7 +437,7 @@ func (b *RequestBuilder) Cookies(cookies map[string]string) *RequestBuilder {
 	return b
 }
 
-// Cookie adds a cookie to the request.
+// Cookie appends a cookie occurrence, preserving repeated names in call order.
 func (b *RequestBuilder) Cookie(key, value string) *RequestBuilder {
 	b.cookieValue(key, privateRequestValue(value))
 	return b

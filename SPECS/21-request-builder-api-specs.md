@@ -483,8 +483,8 @@ complete selected path, and `PathParamValue` replaces the named path-parameter
 entry just as `PathParam` does;
 `QueryValue`, `CookieValue`, and `FormFieldValue` append an occurrence;
 `HeaderValue` replaces the request-local header name and `AddHeaderValue`
-appends within that name. Cookie occurrences still follow the existing
-client/request precedence and same-name merge rules. `TextValue` and
+appends within that name. Cookie occurrences follow the source precedence and
+occurrence-preservation rules defined under Request Metadata. `TextValue` and
 `BytesPayload` replace the current body selection with builder-owned in-memory
 data; `BytesPayload` copies the supplied payload bytes into that storage. Typed
 JSON/XML/YAML methods are intentionally absent. All owner header mutations
@@ -542,9 +542,24 @@ using case-insensitive header-name matching. Request-local `AddHeader` adds
 values within the request-local header set; it does not preserve an older client
 default value for that same header name.
 
-Client and request-local cookies merge by cookie name. The request layer
-replaces same-name defaults and preserves different-name defaults; repeated
-cookies within one layer use the last value.
+Cookie sources apply in increasing precedence: client `Cookie` headers,
+`WithCookies` defaults, request-local `Cookie` headers, then explicit
+`Cookie` / `CookieValue` occurrences. Cookie names are case-sensitive. For each
+name, the highest-precedence source containing that name replaces all
+same-name occurrences from lower sources. Every occurrence within the winning
+source is retained in its original order, including repeated names. Surviving
+sources are concatenated in precedence order; map-based setters do not promise
+map iteration order.
+
+For example, `Cookie("theme", "first").Cookie("other", "middle").Cookie("theme",
+"second")` retains those three occurrences in that order, replacing any
+same-name defaults. Preview preserves their names, Prepare preserves each
+occurrence's disclosure state, and delivery serializes the selected occurrences.
+
+Repeated `WithCookies` options replace configured defaults by name, including
+when deriving a client with `Clone`. `DelCookie` removes all explicit request
+occurrences for the supplied names; it does not remove client defaults or
+cookies supplied through headers.
 
 `OrderedHeaders` accepts an `orderedobject.Object[[]string]` where keys are
 header names and values are all values for each header. It sets request-local

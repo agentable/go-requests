@@ -487,6 +487,35 @@ func TestNew_WithCookies(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode())
 }
 
+func TestNew_WithCookiesReplacesSameNameDefaults(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, r.Header.Get("Cookie"))
+	}))
+	defer server.Close()
+	client := newTestClient(t,
+		WithHTTPClient(server.Client()),
+		WithCookies(map[string]string{"session": "first"}),
+		WithCookies(map[string]string{"session": "second"}),
+	)
+	cloned, err := client.Clone(WithCookies(map[string]string{"session": "third"}))
+	require.NoError(t, err)
+
+	for _, test := range []struct {
+		name   string
+		client *Client
+		want   string
+	}{
+		{name: "original", client: client, want: "session=second"},
+		{name: "clone", client: cloned, want: "session=third"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response, err := test.client.Get(server.URL).Send(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, test.want, response.String())
+		})
+	}
+}
+
 func TestNew_WithBasicAuth(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()

@@ -732,6 +732,118 @@ func TestMetadataPrecedenceClientAuthSynchronizesOrderedAuthorization(t *testing
 	require.NoError(t, err)
 }
 
+func TestRequestCookieOccurrencesPreserveOrder(t *testing.T) {
+	setters := []struct {
+		name  string
+		apply func(*RequestBuilder) *RequestBuilder
+	}{
+		{
+			name: "Cookie",
+			apply: func(b *RequestBuilder) *RequestBuilder {
+				return b.Cookie("theme", "first").Cookie("other", "middle").Cookie("theme", "second")
+			},
+		},
+		{
+			name: "CookieValue",
+			apply: func(b *RequestBuilder) *RequestBuilder {
+				return b.CookieValue("theme", Public("first")).
+					Cookie("other", "middle").CookieValue("theme", Public("second"))
+			},
+		},
+		{
+			name: "Header",
+			apply: func(b *RequestBuilder) *RequestBuilder {
+				return b.Header("Cookie", "theme=first; other=middle; theme=second")
+			},
+		},
+		{
+			name: "AddHeader",
+			apply: func(b *RequestBuilder) *RequestBuilder {
+				return b.AddHeader("Cookie", "theme=first").
+					AddHeader("Cookie", "other=middle; theme=second")
+			},
+		},
+	}
+	for _, setter := range setters {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", setter.name, stream), func(t *testing.T) {
+				observed := make(chan string, 1)
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					observed <- r.Header.Get("Cookie")
+					w.WriteHeader(http.StatusOK)
+				}))
+				defer server.Close()
+
+				builder := setter.apply(newTestClient(t, WithHTTPClient(server.Client())).Get(server.URL))
+				if stream {
+					response, err := builder.SendStream(t.Context())
+					require.NoError(t, err)
+					require.NoError(t, response.Close())
+				} else {
+					_, err := builder.Send(t.Context())
+					require.NoError(t, err)
+				}
+				assert.Equal(t, "theme=first; other=middle; theme=second", <-observed)
+			})
+		}
+	}
+}
+
+func TestMetadataPrecedenceCookieLayersPreserveOccurrences(t *testing.T) {
+	const want = "client=first; client=second; Theme=case-sensitive; shared=client-cookie; " +
+		"header=first; header=second; theme=first; other=middle; theme=second"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, r.Header.Get("Cookie"))
+	}))
+	defer server.Close()
+	client := newTestClient(t,
+		WithHTTPClient(server.Client()),
+		WithOrderedHeaders(orderedobject.New[[]string]().Set("Cookie", []string{
+			"theme=client-header; client=first; client=second; Theme=case-sensitive; shared=header",
+		})),
+		WithCookies(map[string]string{"theme": "client-cookie", "shared": "client-cookie"}),
+		WithMiddleware(func(next MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+			return func(req *http.Request) (*http.Response, error) {
+				ordered, ok := OrderedHeaders(req)
+				require.True(t, ok)
+				cookies, ok := ordered.Get("cookie")
+				require.True(t, ok)
+				assert.Equal(t, []string{want}, cookies)
+				assert.Equal(t, req.Header.Values("Cookie"), cookies)
+				return next(req)
+			}
+		}),
+	)
+
+	response, err := client.Get(server.URL).
+		OrderedHeaders(orderedobject.New[[]string]().Set("cookie", []string{
+			"theme=request-header-first; header=first; theme=request-header-second; header=second",
+		})).
+		Cookie("theme", "first").Cookie("other", "middle").Cookie("theme", "second").
+		Send(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, want, response.String())
+}
+
+func TestDelCookieRemovesAllRequestOccurrences(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, r.Header.Get("Cookie"))
+	}))
+	defer server.Close()
+	client := newTestClient(t,
+		WithHTTPClient(server.Client()),
+		WithCookies(map[string]string{"theme": "default"}),
+	)
+
+	response, err := client.Get(server.URL).
+		Cookie("theme", "first").Cookie("other", "middle").Cookie("theme", "second").
+		DelCookie("theme").Send(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, "theme=default; other=middle", response.String())
+}
+
 func TestMetadataPrecedenceRequestCookiesOverrideByName(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		values := map[string]string{}
@@ -1042,7 +1154,7 @@ func TestRequestPreviewProjectsMetadataWithoutValues(t *testing.T) {
 	assert.Equal(t, PreviewValueOmitted, orderedHeaders[1].Values()[0].State())
 
 	cookies := preview.Cookies()
-	assert.Equal(t, []string{"session", "shared", "default", "request"}, []string{cookies[0].Name(), cookies[1].Name(), cookies[2].Name(), cookies[3].Name()})
+	assert.Equal(t, []string{"session", "default", "shared", "request"}, []string{cookies[0].Name(), cookies[1].Name(), cookies[2].Name(), cookies[3].Name()})
 	for _, cookie := range cookies {
 		assert.Equal(t, PreviewValueOmitted, cookie.Value().State())
 	}
@@ -1061,11 +1173,12 @@ func TestRequestPreviewCookieHeadersFollowDeliveryParser(t *testing.T) {
 
 	require.NoError(t, err)
 	cookies := preview.Cookies()
-	require.Len(t, cookies, 3)
-	assert.Equal(t, []string{"missing-equals", "client", "shared"}, []string{
+	require.Len(t, cookies, 4)
+	assert.Equal(t, []string{"missing-equals", "client", "shared", "shared"}, []string{
 		cookies[0].Name(),
 		cookies[1].Name(),
 		cookies[2].Name(),
+		cookies[3].Name(),
 	})
 	for _, cookie := range cookies {
 		assert.Equal(t, PreviewValueOmitted, cookie.Value().State())
@@ -1090,13 +1203,14 @@ func TestRequestPreviewCookiePrecedenceFiltersInvalidNames(t *testing.T) {
 
 	require.NoError(t, err)
 	cookies := preview.Cookies()
-	require.Len(t, cookies, 5)
-	assert.Equal(t, []string{"client", "shared", "default", "request", "typed"}, []string{
+	require.Len(t, cookies, 6)
+	assert.Equal(t, []string{"client", "default", "shared", "request", "shared", "typed"}, []string{
 		cookies[0].Name(),
 		cookies[1].Name(),
 		cookies[2].Name(),
 		cookies[3].Name(),
 		cookies[4].Name(),
+		cookies[5].Name(),
 	})
 }
 

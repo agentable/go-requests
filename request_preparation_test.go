@@ -3,6 +3,7 @@ package requests
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -117,6 +118,41 @@ func TestRequestPreparationCredentialHeadersStayPrivate(t *testing.T) {
 	require.NoError(t, err)
 	for _, name := range []string{"Authorization", "Proxy-Authorization", "Cookie"} {
 		assert.Equal(t, PreparedValueRedacted, preparedHeaderValue(preparation.Headers(), name).State(), name)
+	}
+}
+
+func TestRequestPreparationCookieOccurrencesKeepDisclosure(t *testing.T) {
+	builder := newTestClient(t,
+		WithHeaders(http.Header{"Cookie": {"theme=client-header"}}),
+		WithCookies(map[string]string{"theme": "client-cookie"}),
+	).Get("https://example.test").
+		Header("Cookie", "theme=request-header").
+		CookieValue("theme", Public("first")).
+		Cookie("other", "private-middle").
+		Cookie("theme", "private-second").
+		CookieValue("theme", Public(""))
+
+	preparation, err := builder.Prepare(t.Context(), PrepareOptions{})
+	require.NoError(t, err)
+	cookies := preparation.Cookies()
+	require.Len(t, cookies, 4)
+	assert.Equal(t, []PreparedCookie{
+		{name: "theme", value: preparedStringPresent("first")},
+		{name: "other", value: preparedRedactedString()},
+		{name: "theme", value: preparedRedactedString()},
+		{name: "theme", value: preparedStringPresent("")},
+	}, cookies)
+	assert.NotContains(t, fmt.Sprint(preparation), "private-middle")
+	assert.NotContains(t, fmt.Sprint(preparation), "private-second")
+
+	preview, err := builder.Preview(t.Context())
+	require.NoError(t, err)
+	previewCookies := preview.Cookies()
+	require.Len(t, previewCookies, len(cookies))
+	for i, cookie := range previewCookies {
+		assert.Equal(t, cookies[i].Name(), cookie.Name())
+		assert.Equal(t, PreviewValueOmitted, cookie.Value().State())
+		assert.Empty(t, cookie.Value().Value())
 	}
 }
 

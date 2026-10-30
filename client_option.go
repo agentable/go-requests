@@ -160,7 +160,7 @@ func WithReferer(referer string) Option {
 	}
 }
 
-// WithCookies sets default cookies on the client.
+// WithCookies sets default cookies on the client, replacing same-name defaults.
 func WithCookies(cookies map[string]string) Option {
 	return func(c *Client) error {
 		c.setDefaultCookies(cookies)
