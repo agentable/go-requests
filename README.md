@@ -38,7 +38,7 @@ A fluent HTTP client library for Go that builds, inspects, and delivers requests
 go get github.com/agentable/go-requests
 ```
 
-Requires **Go 1.27.3+**.
+Requires **Go 1.27.4+**.
 
 Optional extension modules:
 
