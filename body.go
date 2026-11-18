@@ -58,10 +58,11 @@ func (p requestBodyPlan) formAllPublic() bool { //nolint:gocritic // Plans are v
 
 // requestBody holds the delivery reader and its metadata; the reader may still stream.
 type requestBody struct {
-	body          io.Reader
-	getBody       func() (io.ReadCloser, error)
-	contentLength int64
-	contentType   string
+	body               io.Reader
+	getBody            func() (io.ReadCloser, error)
+	contentLength      int64
+	contentType        string
+	multipartLifecycle *multipartSourceLifecycle
 }
 
 // Form sets URL-encoded form fields from a struct, map, or url.Values.
@@ -330,7 +331,7 @@ func buildDeliveryBody(body requestBodyPlan, headers http.Header, snap *clientSn
 		}
 		return replayableRequestBody([]byte(values.Encode()), contentType), nil
 	case requestBodyMultipart:
-		reader, generatedContentType, err := body.multipart.reader()
+		reader, generatedContentType, lifecycle, err := body.multipart.reader()
 		if err != nil {
 			return requestBody{}, err
 		}
@@ -338,7 +339,11 @@ func buildDeliveryBody(body requestBodyPlan, headers http.Header, snap *clientSn
 			generatedContentType = ""
 		}
 		if !body.multipart.canReplay {
-			return requestBody{body: reader, contentType: generatedContentType}, nil
+			return requestBody{
+				body:               reader,
+				contentType:        generatedContentType,
+				multipartLifecycle: lifecycle,
+			}, nil
 		}
 		data, err := io.ReadAll(reader)
 		if err != nil {

@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -2567,6 +2568,872 @@ type gatedReader struct {
 func (r gatedReader) Read(p []byte) (int, error) {
 	<-r.ready
 	return r.reader.Read(p)
+}
+
+type multipartLifecycleReader struct {
+	entered      chan struct{}
+	release      <-chan struct{}
+	data         []byte
+	err          error
+	once         sync.Once
+	active       atomic.Int32
+	closes       atomic.Int32
+	reads        atomic.Int32
+	writeToCalls atomic.Int32
+}
+
+func waitMultipartLifecycleSignal(t testing.TB, signal <-chan struct{}, timeout time.Duration, message string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(timeout):
+		t.Fatal(message)
+	}
+}
+
+func (r *multipartLifecycleReader) Read(p []byte) (int, error) {
+	r.reads.Add(1)
+	r.active.Add(1)
+	defer r.active.Add(-1)
+	r.once.Do(func() { close(r.entered) })
+	<-r.release
+	if r.err != nil {
+		return copy(p, r.data), r.err
+	}
+	return 0, io.EOF
+}
+
+func (r *multipartLifecycleReader) Close() error {
+	r.closes.Add(1)
+	return nil
+}
+
+func (r *multipartLifecycleReader) WriteTo(w io.Writer) (int64, error) {
+	r.writeToCalls.Add(1)
+	return io.Copy(w, struct{ io.Reader }{r})
+}
+
+func TestMultipartLifecycleSendQuiescesSource(t *testing.T) {
+	lateSourceErr := errors.New("late multipart source failure")
+	closedPipeSourceErr := &multipartLifecycleSourceError{cause: io.ErrClosedPipe}
+	for _, test := range []struct {
+		name       string
+		sourceErr  error
+		sourceData []byte
+	}{
+		{name: "response remains available"},
+		{name: "late source error is returned", sourceErr: lateSourceErr},
+		{name: "positive read and closed pipe error are preserved", sourceErr: closedPipeSourceErr, sourceData: []byte("partial")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				entered := make(chan struct{})
+				release := make(chan struct{})
+				released := false
+				defer func() {
+					if !released {
+						close(release)
+					}
+				}()
+				source := &multipartLifecycleReader{entered: entered, release: release, err: test.sourceErr, data: test.sourceData}
+				var requestBody io.ReadCloser
+				client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					requestBody = req.Body
+					consumeDone := make(chan struct{})
+					go func() {
+						_, _ = io.Copy(io.Discard, req.Body)
+						close(consumeDone)
+					}()
+					select {
+					case <-entered:
+					case <-time.After(2 * time.Second):
+						_ = req.Body.Close()
+						<-consumeDone
+						return nil, errors.New("multipart source read did not start")
+					}
+					_ = req.Body.Close()
+					<-consumeDone
+					return &http.Response{
+						Status:     "413 Request Entity Too Large",
+						StatusCode: http.StatusRequestEntityTooLarge,
+						Header:     http.Header{},
+						Body:       io.NopCloser(strings.NewReader("rejected")),
+						Request:    req,
+					}, nil
+				})))
+				type result struct {
+					response *Response
+					err      error
+				}
+				resultCh := make(chan result, 1)
+				go func() {
+					response, err := client.Post("https://example.com").
+						Multipart(NewMultipart().File("upload", "payload.txt", source)).
+						Send(t.Context())
+					resultCh <- result{response: response, err: err}
+				}()
+
+				waitMultipartLifecycleSignal(t, entered, time.Second, "multipart source read did not start")
+				synctest.Wait()
+				returnedBeforeRelease := false
+				var sendResult result
+				select {
+				case sendResult = <-resultCh:
+					returnedBeforeRelease = true
+				default:
+				}
+
+				close(release)
+				released = true
+				if !returnedBeforeRelease {
+					select {
+					case sendResult = <-resultCh:
+					case <-time.After(time.Second):
+						t.Fatal("Send did not return after releasing the multipart source")
+					}
+				}
+
+				if test.sourceErr == nil {
+					require.NoError(t, sendResult.err)
+					require.NotNil(t, sendResult.response)
+					assert.Equal(t, http.StatusRequestEntityTooLarge, sendResult.response.StatusCode())
+				} else {
+					assert.Nil(t, sendResult.response)
+					assert.ErrorIs(t, sendResult.err, test.sourceErr)
+					if errors.Is(test.sourceErr, io.ErrClosedPipe) {
+						var sourceErr *multipartLifecycleSourceError
+						assert.ErrorAs(t, sendResult.err, &sourceErr)
+						assert.Same(t, test.sourceErr, sourceErr)
+					}
+				}
+				readsAtReturn := source.reads.Load()
+				_, readErr := io.Copy(io.Discard, requestBody)
+				assert.ErrorIs(t, readErr, io.ErrClosedPipe)
+				assert.Equal(t, readsAtReturn, source.reads.Load(), "reading a completed request body must not access the borrowed source again")
+				assert.False(t, returnedBeforeRelease, "Send returned while a multipart source Read was active")
+				assert.Zero(t, source.active.Load())
+				assert.Zero(t, source.closes.Load(), "the borrowed source must remain caller-owned")
+				assert.Zero(t, source.writeToCalls.Load(), "multipart copy must not bypass source-read control through WriterTo")
+			})
+		})
+	}
+}
+
+func TestMultipartLifecyclePreservesProducerError(t *testing.T) {
+	release := make(chan struct{})
+	close(release)
+	source := &multipartLifecycleReader{entered: make(chan struct{}), release: release}
+	client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		_ = req.Body.Close()
+		return &http.Response{
+			Status:     "200 OK",
+			StatusCode: http.StatusOK,
+			Header:     http.Header{},
+			Body:       http.NoBody,
+			Request:    req,
+		}, nil
+	})))
+
+	response, err := client.Post("https://example.com").
+		Multipart(NewMultipart().Part(FilePart{Filename: "payload.txt", Body: source})).
+		Send(t.Context())
+
+	assert.Nil(t, response)
+	assert.ErrorIs(t, err, ErrInvalidConfigValue)
+	assert.Zero(t, source.reads.Load(), "invalid part metadata must fail before reading its borrowed source")
+}
+
+func TestMultipartLifecycleSendStopsBeforeClosingResponse(t *testing.T) {
+	responseReadErr := errors.New("response read failed")
+	for _, test := range []struct {
+		name              string
+		responseReadErr   error
+		responseCloseErr  error
+		contentLength     int64
+		maxResponseBytes  int64
+		wantResponseError error
+	}{
+		{name: "response EOF", contentLength: -1, responseCloseErr: errors.New("buffered response close failed")},
+		{name: "response read error", responseReadErr: responseReadErr, contentLength: -1, wantResponseError: responseReadErr},
+		{name: "response exceeds limit", contentLength: 2, maxResponseBytes: 1, wantResponseError: ErrResponseBodyTooLarge},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				entered := make(chan struct{})
+				release := make(chan struct{})
+				released := false
+				defer func() {
+					if !released {
+						close(release)
+					}
+				}()
+				source := &multipartLifecycleReader{entered: entered, release: release}
+				responseClosed := make(chan error, 1)
+				requestBodyClosed := make(chan struct{})
+				client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					bodyReadDone := make(chan struct{})
+					go func() {
+						_, _ = io.Copy(io.Discard, req.Body)
+						close(bodyReadDone)
+					}()
+					go func() {
+						<-req.Context().Done()
+						_ = req.Body.Close()
+						close(requestBodyClosed)
+					}()
+					select {
+					case <-entered:
+					case <-time.After(time.Second):
+						_ = req.Body.Close()
+						return nil, errors.New("multipart source read did not start")
+					}
+					return &http.Response{
+						Status:        "200 OK",
+						StatusCode:    http.StatusOK,
+						Header:        http.Header{},
+						ContentLength: test.contentLength,
+						Body: &multipartLifecycleResponseBody{
+							readDone: bodyReadDone,
+							closed:   responseClosed,
+							err:      test.responseReadErr,
+							closeErr: test.responseCloseErr,
+						},
+						Request: req,
+					}, nil
+				})))
+				resultCh := make(chan error, 1)
+				go func() {
+					builder := client.Post("https://example.com").
+						Timeout(time.Hour).
+						Multipart(NewMultipart().File("upload", "payload.txt", source))
+					if test.maxResponseBytes > 0 {
+						builder.MaxResponseBodyBytes(test.maxResponseBytes)
+					}
+					_, err := builder.Send(t.Context())
+					resultCh <- err
+				}()
+
+				waitMultipartLifecycleSignal(t, entered, time.Second, "multipart source read did not start")
+				synctest.Wait()
+				var responseCloseErr error
+				closedBeforeSourceRelease := false
+				select {
+				case responseCloseErr = <-responseClosed:
+					closedBeforeSourceRelease = true
+				default:
+				}
+				assert.True(t, closedBeforeSourceRelease, "buffered response Close must finish before the blocked source is released")
+				assert.ErrorIs(t, responseCloseErr, test.responseCloseErr)
+				select {
+				case err := <-resultCh:
+					t.Fatalf("Send returned while the multipart source Read was active: %v", err)
+				default:
+				}
+
+				close(release)
+				released = true
+				select {
+				case err := <-resultCh:
+					if test.wantResponseError == nil {
+						assert.NoError(t, err)
+					} else {
+						assert.ErrorIs(t, err, test.wantResponseError)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("Send did not return after releasing the multipart source")
+				}
+				if !closedBeforeSourceRelease {
+					select {
+					case <-responseClosed:
+					case <-time.After(time.Second):
+						t.Fatal("Send did not finish closing the buffered response")
+					}
+				}
+				waitMultipartLifecycleSignal(t, requestBodyClosed, time.Second, "transport did not close the request body")
+				assert.Zero(t, source.active.Load())
+			})
+		})
+	}
+}
+
+func TestMultipartLifecycleStopsBeforeRetryDrain(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		released := false
+		defer func() {
+			if !released {
+				close(release)
+			}
+		}()
+		source := &multipartLifecycleReader{entered: entered, release: release}
+		secondAttempt := make(chan struct{}, 1)
+		var attempts atomic.Int32
+		client := newTestClient(t,
+			WithRetry(RetryPolicy{Max: 1, Backoff: ConstantBackoffStrategy(0)}),
+			WithMiddleware(func(next MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+				return func(req *http.Request) (*http.Response, error) {
+					req.GetBody = func() (io.ReadCloser, error) {
+						return io.NopCloser(strings.NewReader("replayed")), nil
+					}
+					return next(req)
+				}
+			}),
+			WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if attempts.Add(1) == 1 {
+					requestBody := req.Body
+					bodyReadDone := make(chan struct{})
+					go func() {
+						_, _ = io.Copy(io.Discard, requestBody)
+						close(bodyReadDone)
+					}()
+					go func() {
+						<-bodyReadDone
+						_ = requestBody.Close()
+					}()
+					select {
+					case <-entered:
+					case <-time.After(time.Second):
+						_ = req.Body.Close()
+						return nil, errors.New("multipart source read did not start")
+					}
+					return &http.Response{
+						Status:     "503 Service Unavailable",
+						StatusCode: http.StatusServiceUnavailable,
+						Header:     http.Header{},
+						Body:       &multipartLifecycleResponseBody{readDone: bodyReadDone, closed: make(chan error, 1)},
+						Request:    req,
+					}, nil
+				}
+				secondAttempt <- struct{}{}
+				_, err := io.Copy(io.Discard, req.Body)
+				_ = req.Body.Close()
+				if err != nil {
+					return nil, err
+				}
+				return &http.Response{
+					Status:     "200 OK",
+					StatusCode: http.StatusOK,
+					Header:     http.Header{},
+					Body:       io.NopCloser(strings.NewReader("ok")),
+					Request:    req,
+				}, nil
+			})),
+		)
+		resultCh := make(chan error, 1)
+		go func() {
+			_, err := client.Post("https://example.com").
+				Multipart(NewMultipart().File("upload", "payload.txt", source)).
+				Send(t.Context())
+			resultCh <- err
+		}()
+
+		waitMultipartLifecycleSignal(t, entered, time.Second, "multipart source read did not start")
+		synctest.Wait()
+		reachedRetryBeforeRelease := false
+		select {
+		case <-secondAttempt:
+			reachedRetryBeforeRelease = true
+		default:
+		}
+		close(release)
+		released = true
+		select {
+		case err := <-resultCh:
+			assert.NoError(t, err)
+		case <-time.After(time.Second):
+			t.Fatal("retried Send did not finish after releasing the source")
+		}
+		assert.True(t, reachedRetryBeforeRelease, "retry response drain must not wait for the borrowed source")
+		assert.Equal(t, int32(2), attempts.Load())
+		assert.Zero(t, source.active.Load())
+		assert.Zero(t, source.closes.Load())
+	})
+}
+
+type multipartLifecycleResponseBody struct {
+	readDone <-chan struct{}
+	closed   chan<- error
+	err      error
+	closeErr error
+}
+
+func (b *multipartLifecycleResponseBody) Read([]byte) (int, error) {
+	if b.err != nil {
+		return 0, b.err
+	}
+	return 0, io.EOF
+}
+
+func (b *multipartLifecycleResponseBody) Close() error {
+	<-b.readDone
+	b.closed <- b.closeErr
+	return b.closeErr
+}
+
+type multipartLifecycleSourceError struct {
+	cause error
+}
+
+func (e *multipartLifecycleSourceError) Error() string {
+	return "multipart source failed: " + e.cause.Error()
+}
+
+func (e *multipartLifecycleSourceError) Unwrap() error {
+	return e.cause
+}
+
+func TestMultipartLifecycleSendStreamFailureQuiescesSource(t *testing.T) {
+	deliveryErr := errors.New("delivery failed")
+	sourceErr := errors.New("late multipart source failure")
+	for _, test := range []struct {
+		name            string
+		partialResponse bool
+	}{
+		{name: "transport error"},
+		{name: "partial response", partialResponse: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				entered := make(chan struct{})
+				release := make(chan struct{})
+				released := false
+				defer func() {
+					if !released {
+						close(release)
+					}
+				}()
+				source := &multipartLifecycleReader{entered: entered, release: release, err: sourceErr}
+				consumerDone := make(chan struct{})
+				startConsumer := func(req *http.Request) {
+					go func() {
+						_, _ = io.Copy(io.Discard, req.Body)
+						close(consumerDone)
+					}()
+				}
+				responseClosed := make(chan struct{}, 1)
+				var client *Client
+				if test.partialResponse {
+					client = newTestClient(t, WithMiddleware(func(MiddlewareHandlerFunc) MiddlewareHandlerFunc {
+						return func(req *http.Request) (*http.Response, error) {
+							startConsumer(req)
+							select {
+							case <-entered:
+							case <-time.After(2 * time.Second):
+								return nil, errors.New("multipart source read did not start")
+							}
+							return &http.Response{
+								Status:     "502 Bad Gateway",
+								StatusCode: http.StatusBadGateway,
+								Header:     http.Header{},
+								Body:       &closeSignalBody{ReadCloser: io.NopCloser(strings.NewReader("partial")), closed: responseClosed},
+								Request:    req,
+							}, deliveryErr
+						}
+					}))
+				} else {
+					client = newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+						startConsumer(req)
+						select {
+						case <-entered:
+						case <-time.After(2 * time.Second):
+							_ = req.Body.Close()
+							<-consumerDone
+							return nil, errors.New("multipart source read did not start")
+						}
+						_ = req.Body.Close()
+						<-consumerDone
+						return nil, deliveryErr
+					})))
+				}
+
+				type result struct {
+					response *StreamResponse
+					err      error
+				}
+				resultCh := make(chan result, 1)
+				go func() {
+					response, err := client.Post("https://example.com").
+						Multipart(NewMultipart().File("upload", "payload.txt", source)).
+						SendStream(t.Context())
+					resultCh <- result{response: response, err: err}
+				}()
+
+				waitMultipartLifecycleSignal(t, entered, time.Second, "multipart source read did not start")
+				synctest.Wait()
+				returnedBeforeRelease := false
+				var sendResult result
+				select {
+				case sendResult = <-resultCh:
+					returnedBeforeRelease = true
+				default:
+				}
+
+				close(release)
+				released = true
+				if !returnedBeforeRelease {
+					select {
+					case sendResult = <-resultCh:
+					case <-time.After(time.Second):
+						t.Fatal("SendStream did not return after releasing the multipart source")
+					}
+				}
+				waitMultipartLifecycleSignal(t, consumerDone, time.Second, "request body consumer did not stop")
+
+				assert.False(t, returnedBeforeRelease, "SendStream returned while a multipart source Read was active")
+				assert.ErrorIs(t, sendResult.err, deliveryErr)
+				assert.ErrorIs(t, sendResult.err, sourceErr)
+				assert.Zero(t, source.active.Load())
+				assert.Zero(t, source.closes.Load(), "the borrowed source must remain caller-owned")
+				assert.Zero(t, source.writeToCalls.Load(), "multipart copy must not bypass source-read control through WriterTo")
+				if test.partialResponse {
+					require.NotNil(t, sendResult.response)
+					assert.Equal(t, http.StatusBadGateway, sendResult.response.StatusCode())
+					select {
+					case <-responseClosed:
+					default:
+						t.Fatal("partial response body was not closed")
+					}
+					assert.ErrorIs(t, sendResult.response.Close(), sourceErr)
+				} else {
+					assert.Nil(t, sendResult.response)
+				}
+			})
+		})
+	}
+}
+
+func TestMultipartLifecycleTimeouts(t *testing.T) {
+	requestBodyNotStopped := errors.New("request body did not stop when its context ended")
+	timeouts := []struct {
+		name         string
+		parentCancel bool
+		builder      time.Duration
+		client       time.Duration
+		wantErr      error
+	}{
+		{name: "parent cancellation", parentCancel: true, wantErr: context.Canceled},
+		{name: "builder timeout", builder: 50 * time.Millisecond, wantErr: context.DeadlineExceeded},
+		{name: "client timeout", client: 50 * time.Millisecond, wantErr: context.DeadlineExceeded},
+	}
+	for _, timeout := range timeouts {
+		for _, sendStream := range []bool{false, true} {
+			name := "Send"
+			if sendStream {
+				name = "SendStream"
+			}
+			t.Run(timeout.name+"/"+name, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					entered := make(chan struct{})
+					release := make(chan struct{})
+					released := false
+					defer func() {
+						if !released {
+							close(release)
+						}
+					}()
+					source := &multipartLifecycleReader{entered: entered, release: release}
+					contextEnded := make(chan struct{})
+					transport := testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+						bodyErr := make(chan error, 1)
+						go func() {
+							_, err := io.Copy(io.Discard, req.Body)
+							bodyErr <- err
+						}()
+						select {
+						case <-req.Context().Done():
+							close(contextEnded)
+						case <-time.After(2 * time.Second):
+							_ = req.Body.Close()
+							<-bodyErr
+							return nil, errors.New("request context did not end")
+						}
+						select {
+						case err := <-bodyErr:
+							_ = req.Body.Close()
+							if !errors.Is(err, io.ErrClosedPipe) {
+								return nil, errors.Join(req.Context().Err(), requestBodyNotStopped)
+							}
+							return nil, req.Context().Err()
+						case <-time.After(time.Second):
+							_ = req.Body.Close()
+							<-bodyErr
+							return nil, errors.Join(req.Context().Err(), requestBodyNotStopped)
+						}
+					})
+
+					var options []Option
+					if timeout.client > 0 {
+						options = append(options, WithTimeout(timeout.client))
+					}
+					client := newTestClient(t, append(options, WithTransport(transport))...)
+					ctx, cancel := context.WithCancel(t.Context())
+					defer cancel()
+					builder := client.Post("https://example.com").
+						Multipart(NewMultipart().File("upload", "payload.txt", source))
+					if timeout.builder > 0 {
+						builder.Timeout(timeout.builder)
+					}
+					resultCh := make(chan error, 1)
+					go func() {
+						if sendStream {
+							_, err := builder.SendStream(ctx)
+							resultCh <- err
+							return
+						}
+						_, err := builder.Send(ctx)
+						resultCh <- err
+					}()
+
+					waitMultipartLifecycleSignal(t, entered, time.Second, "multipart source read did not start")
+					if timeout.parentCancel {
+						cancel()
+					}
+					waitMultipartLifecycleSignal(t, contextEnded, time.Second, "request context did not end")
+					synctest.Wait()
+					returnedBeforeRelease := false
+					var sendErr error
+					select {
+					case sendErr = <-resultCh:
+						returnedBeforeRelease = true
+					default:
+					}
+
+					close(release)
+					released = true
+					if !returnedBeforeRelease {
+						select {
+						case sendErr = <-resultCh:
+						case <-time.After(time.Second):
+							t.Fatal("delivery did not return after releasing the multipart source")
+						}
+					}
+					assert.False(t, returnedBeforeRelease, "delivery returned while a multipart source Read was active")
+					assert.ErrorIs(t, sendErr, timeout.wantErr)
+					assert.False(t, errors.Is(sendErr, requestBodyNotStopped))
+					assert.Equal(t, timeout.parentCancel, IsCanceled(sendErr))
+					assert.Equal(t, !timeout.parentCancel, IsTimeout(sendErr))
+					assert.Zero(t, source.active.Load())
+					assert.Zero(t, source.closes.Load())
+					assert.Zero(t, source.writeToCalls.Load())
+				})
+			})
+		}
+	}
+}
+
+func newMultipartLifecycleHTTPServer(t *testing.T, http2 bool, handler http.HandlerFunc) (*httptest.Server, *Client) {
+	t.Helper()
+	if http2 {
+		server := httptest.NewUnstartedServer(handler)
+		server.EnableHTTP2 = true
+		server.StartTLS()
+		t.Cleanup(server.Close)
+		return server, newTestClient(t, WithHTTPClient(server.Client()))
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	return server, newTestClient(t)
+}
+
+func TestMultipartLifecycleHTTPProtocols(t *testing.T) {
+	protocols := []struct {
+		name      string
+		http2     bool
+		wantProto string
+	}{
+		{name: "http1", wantProto: "HTTP/1.1"},
+		{name: "http2", http2: true, wantProto: "HTTP/2.0"},
+	}
+	for _, protocol := range protocols {
+		t.Run(protocol.name+"/early_response", func(t *testing.T) {
+			responseSent := make(chan struct{})
+			serverProto := make(chan string, 1)
+			server, client := newMultipartLifecycleHTTPServer(t, protocol.http2, func(w http.ResponseWriter, r *http.Request) {
+				serverProto <- r.Proto
+				_ = http.NewResponseController(w).EnableFullDuplex()
+				w.Header().Set("Content-Length", "8")
+				w.WriteHeader(http.StatusRequestEntityTooLarge)
+				_, _ = io.WriteString(w, "rejected")
+				w.(http.Flusher).Flush()
+				close(responseSent)
+			})
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			released := false
+			defer func() {
+				if !released {
+					close(release)
+				}
+			}()
+			source := &multipartLifecycleReader{entered: entered, release: release}
+			type result struct {
+				response *Response
+				err      error
+			}
+			resultCh := make(chan result, 1)
+			go func() {
+				response, err := client.Post(server.URL).
+					Multipart(NewMultipart().File("upload", "payload.txt", source)).
+					Send(t.Context())
+				resultCh <- result{response: response, err: err}
+			}()
+			waitMultipartLifecycleSignal(t, entered, 5*time.Second, "multipart source read did not start")
+			select {
+			case <-responseSent:
+			case <-time.After(5 * time.Second):
+				t.Fatal("server did not send the early response")
+			}
+			var sendResult result
+			returnedBeforeRelease := false
+			select {
+			case sendResult = <-resultCh:
+				returnedBeforeRelease = true
+			case <-time.After(100 * time.Millisecond):
+			}
+			close(release)
+			released = true
+			if !returnedBeforeRelease {
+				select {
+				case sendResult = <-resultCh:
+				case <-time.After(5 * time.Second):
+					t.Fatal("Send did not return after releasing the multipart source")
+				}
+			}
+			assert.False(t, returnedBeforeRelease, "Send returned before the blocked multipart source exited")
+			assert.Equal(t, protocol.wantProto, <-serverProto)
+			require.NoError(t, sendResult.err)
+			require.NotNil(t, sendResult.response)
+			assert.Equal(t, http.StatusRequestEntityTooLarge, sendResult.response.StatusCode())
+			assert.Zero(t, source.active.Load())
+			assert.Zero(t, source.closes.Load())
+		})
+
+		t.Run(protocol.name+"/cancel", func(t *testing.T) {
+			requestStarted := make(chan struct{})
+			serverBodyDone := make(chan struct{})
+			serverProto := make(chan string, 1)
+			server, client := newMultipartLifecycleHTTPServer(t, protocol.http2, func(w http.ResponseWriter, r *http.Request) {
+				serverProto <- r.Proto
+				_ = http.NewResponseController(w).EnableFullDuplex()
+				close(requestStarted)
+				_, _ = io.Copy(io.Discard, r.Body)
+				close(serverBodyDone)
+			})
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			released := false
+			defer func() {
+				if !released {
+					close(release)
+				}
+			}()
+			source := &multipartLifecycleReader{entered: entered, release: release}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			type result struct {
+				response *Response
+				err      error
+			}
+			resultCh := make(chan result, 1)
+			go func() {
+				response, err := client.Post(server.URL).
+					Multipart(NewMultipart().File("upload", "payload.txt", source)).
+					Send(ctx)
+				resultCh <- result{response: response, err: err}
+			}()
+			waitMultipartLifecycleSignal(t, entered, 5*time.Second, "multipart source read did not start")
+			select {
+			case <-requestStarted:
+			case <-time.After(5 * time.Second):
+				t.Fatal("server did not receive the request")
+			}
+			cancel()
+			var sendResult result
+			returnedBeforeRelease := false
+			select {
+			case sendResult = <-resultCh:
+				returnedBeforeRelease = true
+			case <-time.After(100 * time.Millisecond):
+			}
+			close(release)
+			released = true
+			if !returnedBeforeRelease {
+				select {
+				case sendResult = <-resultCh:
+				case <-time.After(5 * time.Second):
+					t.Fatal("Send did not return after releasing the multipart source")
+				}
+			}
+			select {
+			case <-serverBodyDone:
+			case <-time.After(5 * time.Second):
+				t.Fatal("server did not finish reading the canceled request")
+			}
+			assert.Equal(t, protocol.wantProto, <-serverProto)
+			assert.False(t, returnedBeforeRelease, "Send returned before the blocked multipart source exited")
+			assert.Nil(t, sendResult.response)
+			assert.ErrorIs(t, sendResult.err, context.Canceled)
+			assert.Zero(t, source.active.Load())
+			assert.Zero(t, source.closes.Load())
+		})
+
+		t.Run(protocol.name+"/full_duplex", func(t *testing.T) {
+			serverProto := make(chan string, 1)
+			server, client := newMultipartLifecycleHTTPServer(t, protocol.http2, func(w http.ResponseWriter, r *http.Request) {
+				serverProto <- r.Proto
+				_ = http.NewResponseController(w).EnableFullDuplex()
+				_, _ = io.WriteString(w, "A")
+				w.(http.Flusher).Flush()
+				_, _ = io.Copy(io.Discard, r.Body)
+				_, _ = io.WriteString(w, "B")
+			})
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			released := false
+			defer func() {
+				if !released {
+					close(release)
+				}
+			}()
+			source := &multipartLifecycleReader{entered: entered, release: release}
+			type result struct {
+				response *StreamResponse
+				err      error
+			}
+			resultCh := make(chan result, 1)
+			go func() {
+				response, err := client.Post(server.URL).
+					Timeout(10 * time.Second).
+					Multipart(NewMultipart().File("upload", "payload.txt", source)).
+					SendStream(t.Context())
+				resultCh <- result{response: response, err: err}
+			}()
+			waitMultipartLifecycleSignal(t, entered, 5*time.Second, "multipart source read did not start")
+			var streamResult result
+			select {
+			case streamResult = <-resultCh:
+			case <-time.After(5 * time.Second):
+				t.Fatal("SendStream did not return the early response")
+			}
+			require.NoError(t, streamResult.err)
+			require.NotNil(t, streamResult.response)
+			assert.Equal(t, protocol.wantProto, streamResult.response.Raw().Proto)
+			first := make([]byte, 1)
+			_, err := io.ReadFull(streamResult.response.Body(), first)
+			require.NoError(t, err)
+			assert.Equal(t, "A", string(first))
+			assert.Equal(t, int32(1), source.active.Load(), "the first response segment must not stop upload")
+			close(release)
+			released = true
+			responseTail, err := io.ReadAll(streamResult.response.Body())
+			require.NoError(t, err)
+			assert.Equal(t, "B", string(responseTail))
+			assert.Equal(t, protocol.wantProto, <-serverProto)
+			assert.NoError(t, streamResult.response.Close())
+			assert.Zero(t, source.active.Load())
+		})
+	}
 }
 
 func TestMultipartStreamsAfterTransportStarts(t *testing.T) {

@@ -98,7 +98,9 @@ Invalid or negative `Retry-After` values fall back to the configured strategy.
 The retry loop respects the request context.
 
 - If the context is canceled or reaches its deadline during backoff, delivery stops and returns `ctx.Err()`.
+- For default streaming multipart, cancellation or timeout stops the library-owned request pipe but cannot interrupt an arbitrary borrowed `FilePart.Body.Read`. `Send` and failed `SendStream` exits wait for producer cleanup, so they may return after the request deadline once the caller unblocks the source.
 - Before sleeping for a retry, any successfully returned response body owned by the retry loop is drained up to an internal cap and closed.
+- When a retry is selected for a streaming multipart request whose `GetBody` is supplied by middleware, delivery stops the original producer before draining the intermediate response. This does not make the default streaming multipart body replayable.
 - If draining or closing that retry response fails, delivery stops before another transport attempt and returns an error preserving every cleanup cause.
 - If reopening the body for the next attempt fails, delivery returns the reopening error without returning the already drained and closed intermediate response.
 - When proxy rotation is configured through `WithProxies` or a proxy selector, proxy choice is evaluated per transport attempt, so retries may use different proxies.

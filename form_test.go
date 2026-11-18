@@ -227,7 +227,7 @@ func TestMultipartFileBytesUsesSnapshotAndCustomBoundary(t *testing.T) {
 		Replayable(1024)
 	data[0] = 'j'
 
-	reader, contentType, err := body.reader()
+	reader, contentType, _, err := body.reader()
 	require.NoError(t, err)
 	assert.Contains(t, contentType, "boundary=requests-boundary")
 
@@ -282,7 +282,7 @@ func TestMultipartReportsInvalidConfiguration(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, _, err := tc.body.reader()
+			_, _, _, err := tc.body.reader()
 			assert.ErrorIs(t, err, ErrInvalidConfigValue)
 		})
 	}
@@ -295,6 +295,6 @@ func TestMultipartReportsInvalidBoundary(t *testing.T) {
 		Boundary(strings.Repeat("x", 71)).
 		FileString("avatar", "avatar.txt", "hello")
 
-	_, _, err := body.reader()
+	_, _, _, err := body.reader()
 	require.Error(t, err)
 }

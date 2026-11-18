@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"iter"
 	"net/http"
@@ -14,21 +15,24 @@ import (
 
 // StreamResponse is an unbuffered HTTP response whose body is owned by the caller.
 type StreamResponse struct {
-	elapsed     time.Duration
-	attempts    int
-	cancel      context.CancelFunc
-	closeOnce   sync.Once
-	closeErr    error
-	rawResponse *http.Response
+	elapsed            time.Duration
+	attempts           int
+	cancel             context.CancelFunc
+	closeOnce          sync.Once
+	closeErr           error
+	multipartLifecycle *multipartSourceLifecycle
+	rawResponse        *http.Response
 }
 
 func newStreamResponse(
 	resp *http.Response,
 	cancel context.CancelFunc,
+	multipartLifecycle *multipartSourceLifecycle,
 ) *StreamResponse {
 	return &StreamResponse{
-		rawResponse: resp,
-		cancel:      cancel,
+		rawResponse:        resp,
+		cancel:             cancel,
+		multipartLifecycle: multipartLifecycle,
 	}
 }
 
@@ -90,15 +94,26 @@ func (r *StreamResponse) Lines() iter.Seq2[[]byte, error] {
 	}
 }
 
-// Close closes the response body and releases the request context.
+// Close stops a default streaming multipart producer, closes the response body,
+// and releases the request context. It waits until borrowed parts can no longer
+// be read and joins producer errors with the response body close error. The
+// library does not close borrowed parts; a blocked source Read can delay Close.
 func (r *StreamResponse) Close() error {
 	r.closeOnce.Do(func() {
+		if r.multipartLifecycle != nil {
+			r.multipartLifecycle.stop()
+		}
 		if r.cancel != nil {
 			r.cancel()
 		}
+		var bodyErr error
 		if r.rawResponse != nil && r.rawResponse.Body != nil {
-			r.closeErr = r.rawResponse.Body.Close()
+			bodyErr = r.rawResponse.Body.Close()
 		}
+		if r.multipartLifecycle != nil {
+			bodyErr = errors.Join(bodyErr, r.multipartLifecycle.wait())
+		}
+		r.closeErr = bodyErr
 	})
 	return r.closeErr
 }

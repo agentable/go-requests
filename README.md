@@ -508,6 +508,34 @@ resp, err := client.Post("/upload").
 `requests` never closes them by dynamic type. The HTTP transport still owns and
 closes the outer request body for each attempt.
 
+With `Send`, the multipart producer has stopped reading borrowed parts before
+the method returns. With `SendStream`, keep each part open until
+`StreamResponse.Close()` returns. Reading the response to EOF or closing its
+body alone does not end the borrow. `Close()` returns producer errors along with
+the response-body close error. Request cancellation stops the internal pipe but
+cannot interrupt an arbitrary blocked `Read`; the caller must independently
+unblock a source that may wait indefinitely.
+
+```go
+streamFile, err := os.Open("avatar.png")
+if err != nil {
+	return err
+}
+streamBody := requests.NewMultipart().File("avatar", "avatar.png", streamFile)
+
+stream, sendErr := client.Post("/upload").Multipart(streamBody).SendStream(ctx)
+if stream == nil {
+	return errors.Join(sendErr, streamFile.Close())
+}
+if sendErr != nil {
+	return errors.Join(sendErr, stream.Close(), streamFile.Close())
+}
+
+readErr := consumeResponse(stream.Body())
+closeErr := stream.Close()
+return errors.Join(readErr, closeErr, streamFile.Close())
+```
+
 Prepare does not open or close multipart parts. Its manifest keeps field names,
 value multiplicity, and file field order while withholding part values,
 filenames, content types, boundaries, and raw framing. Manifest order is a
@@ -549,8 +577,11 @@ if err != nil {
 Use `client.Get(path).Timeout(d).Send(ctx)` to bound a request, including retries
 and response reading. A positive `d` applies even when `ctx` already has a
 deadline; the earlier deadline wins. Zero adds no request-local deadline.
-Completing the request leaves the parent context usable. With `SendStream`,
-close the returned response to release its request context.
+Completing the request leaves the parent context usable. With default streaming
+multipart, cancellation stops the request pipe but cannot force a borrowed
+reader's active `Read` to return, so `Send` or `StreamResponse.Close()` may wait
+past the deadline. With `SendStream`, close the returned response to release its
+request context and finish the multipart borrow.
 
 ### Client-level retries
 
@@ -858,15 +889,23 @@ stream, err := client.Get("/events").SendStream(context.Background())
 if err != nil {
 	log.Fatal(err)
 }
-defer stream.Close()
 
+var readErr error
 for line, err := range stream.Lines() {
 	if err != nil {
-		log.Fatal(err)
+		readErr = err
+		break
 	}
 	fmt.Printf("event: %s\n", line)
 }
+closeErr := stream.Close()
+if err := errors.Join(readErr, closeErr); err != nil {
+	log.Fatal(err)
+}
 ```
+
+Reaching response EOF does not close the stream. Check `Close()` because it may
+also report a late multipart source error.
 
 If `SendStream` returns both a response and an error (for example, when
 `CheckRedirect` rejects a redirect), the response retains status and headers but

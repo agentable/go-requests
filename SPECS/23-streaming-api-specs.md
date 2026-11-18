@@ -17,18 +17,38 @@ Streaming is an explicit dispatch mode. `RequestBuilder.SendStream(ctx)` returns
 - `Lines() iter.Seq2[[]byte, error]`
 - `Close() error`
 
-The caller MUST close `StreamResponse`. Closing the stream response closes the response body and releases any request context derived from builder timeout.
-The derived request context is released before the body is closed, so a body whose cleanup waits for request cancellation can finish. Repeated calls are idempotent and return the first body-close error.
+The caller MUST close `StreamResponse`. Closing the stream response closes the
+response body and releases any request context derived from builder timeout.
+The derived request context is released before the body is closed, so a body
+whose cleanup waits for request cancellation can finish. Repeated or concurrent
+calls wait for the same cleanup and return the same final error.
 
-`Elapsed()` returns the duration from request dispatch through stream response setup. `Attempts()` returns transport attempts for the stream response, including the first request.
+For a successful `SendStream` using default streaming multipart, the response
+may be returned while the upload producer is still reading borrowed
+`FilePart.Body` values. `Close()` stops the library-owned request pipe, releases
+the request context, closes the response body, and waits until the producer can
+no longer access those parts. It does not close the borrowed parts. Reading the
+response body to EOF or closing `Body()` alone does not finish this cleanup.
+Errors from the producer are joined with a response-body close error and
+returned by `Close()`.
+
+An arbitrary borrowed `Read` cannot be forcibly interrupted by request
+cancellation. If a source remains blocked, `Close()` may wait beyond the request
+deadline until the caller independently unblocks that read.
+
+`Elapsed()` returns the duration from request dispatch through stream response
+setup; it does not include a later `Close()` wait. `Attempts()` returns transport
+attempts for the stream response, including the first request.
 
 When delivery returns both an HTTP response and an error, `SendStream` returns
 both a non-nil `StreamResponse` and that error. Its status, headers, URL, elapsed
 time, and attempt count remain available as evidence of the received response;
 the body is already closed and must not be read. Any derived context is canceled
-before body cleanup, and a subsequent `Close` is idempotent. A rejected redirect
-preserves the response metadata without closing the body a second time after
-`net/http` has closed it. Transport errors without a response still return nil.
+before body cleanup, and producer cleanup is complete before the method returns.
+A subsequent `Close` is idempotent. A rejected redirect preserves the response
+metadata without closing the body a second time after `net/http` has closed it.
+Transport errors without a response still return nil after multipart producer
+cleanup.
 
 `Header()` and `URL()` return snapshots; callers that intentionally need to mutate the underlying response use `Raw()`.
 

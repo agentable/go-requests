@@ -59,7 +59,7 @@ These helpers describe response metadata only. They do not change delivery behav
 
 Diagnostics:
 
-- `Elapsed()` returns the duration from request dispatch through buffered response setup.
+- `Elapsed()` returns the duration from request dispatch through buffered response setup. For default streaming multipart, it also includes waiting until the producer can no longer access its borrowed parts.
 - `Attempts()` returns transport attempts for this response, including the first request.
 - `Protocol()` returns the final `http.Response.Proto` string.
 - `TLS()` returns a copy of the final response TLS connection state, or nil for non-TLS responses.

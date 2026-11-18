@@ -681,6 +681,23 @@ of all of those collaborators.
 The outer `http.Request.Body` follows the standard transport contract and is
 closed by the transport for each attempt or redirect hop.
 
+For the default non-replayable streaming path, `Send` does not return until the
+multipart producer can no longer access a borrowed `FilePart.Body`, including
+when delivery or response handling fails. A non-EOF source error is preserved
+and prevents `Send` from returning a response. A successful `SendStream` may
+return while the producer is still reading; the caller must keep each borrowed
+part open until `StreamResponse.Close()` returns. A `SendStream` failure
+completes producer cleanup before returning, including when it retains closed
+response metadata. Reading the response to EOF or closing `StreamResponse.Body()`
+alone does not complete that cleanup. `Replayable(maxBytes)` continues to read
+and buffer parts during synchronous delivery materialization instead.
+
+The library never closes a borrowed part. Request cancellation and timeout stop
+the library-owned pipe but cannot forcibly interrupt an arbitrary in-progress
+`FilePart.Body.Read`. Consequently `Send`, a failed `SendStream`, or
+`StreamResponse.Close()` may wait beyond the request deadline until that read
+returns. A source that may block must have its own way to be unblocked.
+
 Prepare projects an opaque `Reader` structurally without reading or closing it.
 Multipart preparation is structural only: it retains field names, value counts,
 and file-field order, never creates a boundary or producer, and never reads or
@@ -708,6 +725,11 @@ Positive `Timeout` bounds the entire request delivery, including retries and
 response reading. The effective deadline is the earlier of the parent context
 deadline and the request-local deadline. It never extends a parent's deadline
 or cancels the parent when the request finishes or reaches its local limit.
+
+For default streaming multipart, the deadline stops the request pipe but cannot
+force an arbitrary borrowed `FilePart.Body.Read` to return. Cleanup may therefore
+keep `Send` or `StreamResponse.Close()` waiting beyond that deadline until the
+caller unblocks the source.
 
 Zero timeout means no request-local deadline. A negative timeout is invalid and
 returns `ErrInvalidConfigValue` through the preparation-error contract.

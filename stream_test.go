@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -18,11 +19,15 @@ import (
 
 type contextBoundCloseBody struct {
 	done     <-chan struct{}
+	reader   io.Reader
 	closeErr error
 	closes   int
 }
 
-func (*contextBoundCloseBody) Read([]byte) (int, error) {
+func (b *contextBoundCloseBody) Read(p []byte) (int, error) {
+	if b.reader != nil {
+		return b.reader.Read(p)
+	}
 	return 0, io.EOF
 }
 
@@ -124,7 +129,7 @@ func TestStreamResponseCloseCancelsBeforeClosingBody(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		closeErr := errors.New("close failed")
 		body := &contextBoundCloseBody{done: ctx.Done(), closeErr: closeErr}
-		resp := newStreamResponse(&http.Response{Body: body}, cancel)
+		resp := newStreamResponse(&http.Response{Body: body}, cancel, nil)
 		closeDone := make(chan error, 1)
 
 		go func() {
@@ -143,6 +148,120 @@ func TestStreamResponseCloseCancelsBeforeClosingBody(t *testing.T) {
 
 		assert.ErrorIs(t, resp.Close(), closeErr)
 		assert.Equal(t, 1, body.closes)
+	})
+}
+
+func TestMultipartLifecycleStreamClose(t *testing.T) {
+	sourceErr := errors.New("late multipart source failure")
+	responseCloseErr := errors.New("response body close failed")
+	synctest.Test(t, func(t *testing.T) {
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		released := false
+		defer func() {
+			if !released {
+				close(release)
+			}
+		}()
+		source := &multipartLifecycleReader{entered: entered, release: release, err: sourceErr}
+		var responseBody *contextBoundCloseBody
+		client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			consumeDone := make(chan struct{})
+			go func() {
+				_, _ = io.Copy(io.Discard, req.Body)
+				close(consumeDone)
+			}()
+			select {
+			case <-entered:
+			case <-time.After(2 * time.Second):
+				_ = req.Body.Close()
+				<-consumeDone
+				return nil, errors.New("multipart source read did not start")
+			}
+			_ = req.Body.Close()
+			<-consumeDone
+			responseBody = &contextBoundCloseBody{
+				done:     req.Context().Done(),
+				reader:   strings.NewReader("stream response"),
+				closeErr: responseCloseErr,
+			}
+			return &http.Response{
+				Status:     "413 Request Entity Too Large",
+				StatusCode: http.StatusRequestEntityTooLarge,
+				Header:     http.Header{},
+				Body:       responseBody,
+				Request:    req,
+			}, nil
+		})))
+		type streamResult struct {
+			response *StreamResponse
+			err      error
+		}
+		resultCh := make(chan streamResult, 1)
+		go func() {
+			response, err := client.Post("https://example.com").
+				Timeout(time.Hour).
+				Multipart(NewMultipart().File("upload", "payload.txt", source)).
+				SendStream(t.Context())
+			resultCh <- streamResult{response: response, err: err}
+		}()
+
+		waitMultipartLifecycleSignal(t, entered, time.Second, "multipart source read did not start")
+		var result streamResult
+		select {
+		case result = <-resultCh:
+		case <-time.After(time.Second):
+			t.Fatal("SendStream did not return before the multipart source was released")
+		}
+		require.NoError(t, result.err)
+		require.NotNil(t, result.response)
+		body, err := io.ReadAll(result.response.Body())
+		require.NoError(t, err)
+		assert.Equal(t, "stream response", string(body))
+		assert.Equal(t, int32(1), source.active.Load(), "reading the response to EOF must not end the multipart borrow")
+
+		closeResults := make(chan error, 2)
+		go func() { closeResults <- result.response.Close() }()
+		synctest.Wait()
+		go func() { closeResults <- result.response.Close() }()
+		returnedBeforeRelease := false
+		var closeErr1 error
+		select {
+		case closeErr1 = <-closeResults:
+			returnedBeforeRelease = true
+		default:
+		}
+
+		close(release)
+		released = true
+		var closeErr2 error
+		if returnedBeforeRelease {
+			select {
+			case closeErr2 = <-closeResults:
+			case <-time.After(time.Second):
+				t.Fatal("concurrent StreamResponse.Close did not finish after releasing the source")
+			}
+		} else {
+			select {
+			case closeErr1 = <-closeResults:
+			case <-time.After(time.Second):
+				t.Fatal("StreamResponse.Close did not finish after releasing the source")
+			}
+			select {
+			case closeErr2 = <-closeResults:
+			case <-time.After(time.Second):
+				t.Fatal("concurrent StreamResponse.Close did not finish after releasing the source")
+			}
+		}
+		assert.False(t, returnedBeforeRelease, "StreamResponse.Close returned while a multipart source Read was active")
+		assert.ErrorIs(t, closeErr1, sourceErr)
+		assert.ErrorIs(t, closeErr1, responseCloseErr)
+		assert.ErrorIs(t, closeErr2, sourceErr)
+		assert.ErrorIs(t, closeErr2, responseCloseErr)
+		assert.Equal(t, closeErr1, closeErr2)
+		assert.Equal(t, 1, responseBody.closes)
+		assert.Zero(t, source.active.Load())
+		assert.Zero(t, source.closes.Load(), "the borrowed source must remain caller-owned")
 	})
 }
 

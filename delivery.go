@@ -71,6 +71,7 @@ type openedDelivery struct {
 	middlewares          []Middleware
 	retryPolicy          RetryPolicy
 	maxResponseBodyBytes int64
+	multipartLifecycle   *multipartSourceLifecycle
 	cancel               context.CancelFunc
 	start                time.Time
 }
@@ -184,6 +185,9 @@ func (s *deliverySnapshot) openDelivery(ctx context.Context) (*openedDelivery, e
 	req.GetBody = preparedBody.getBody
 	req.ContentLength = preparedBody.contentLength
 	req = applyPlanAuthAndHeaders(req, s.plan, preparedBody.contentType)
+	if preparedBody.multipartLifecycle != nil {
+		preparedBody.multipartLifecycle.watchContext(req.Context())
+	}
 
 	return &openedDelivery{
 		request:              req,
@@ -191,9 +195,41 @@ func (s *deliverySnapshot) openDelivery(ctx context.Context) (*openedDelivery, e
 		middlewares:          slices.Clone(s.middlewares),
 		retryPolicy:          s.retryPolicy,
 		maxResponseBodyBytes: s.maxResponseBodyBytes,
+		multipartLifecycle:   preparedBody.multipartLifecycle,
 		cancel:               cancel,
 		start:                start,
 	}, nil
+}
+
+func (d *openedDelivery) stopMultipart() {
+	if d.multipartLifecycle != nil {
+		d.multipartLifecycle.stop()
+	}
+}
+
+func (d *openedDelivery) waitMultipart() error {
+	if d.multipartLifecycle == nil {
+		return nil
+	}
+	return d.multipartLifecycle.wait()
+}
+
+type multipartResponseBody struct {
+	io.ReadCloser
+	lifecycle *multipartSourceLifecycle
+}
+
+func (b multipartResponseBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil {
+		b.lifecycle.stop()
+	}
+	return n, err
+}
+
+func (b multipartResponseBody) Close() error {
+	b.lifecycle.stop()
+	return b.ReadCloser.Close()
 }
 
 // deliveryBody preserves the original close obligation when middleware replaces
@@ -267,6 +303,7 @@ func (d *openedDelivery) do() (*http.Response, int, error) {
 			}
 
 			if resp != nil && err == nil {
+				d.stopMultipart()
 				if err := drainAndCloseBody(resp.Body); err != nil {
 					return nil, fmt.Errorf("cleaning retry response body: %w", err)
 				}
@@ -334,7 +371,9 @@ func drainAndCloseBody(body io.ReadCloser) error {
 // before the response arrives, Send returns ctx.Err() and any partial response
 // is closed internally. On success, Send fully reads and closes the transport
 // body before returning the buffered Response; caller cleanup is not required
-// for connection reuse.
+// for connection reuse. For default streaming multipart, Send also waits until
+// borrowed FilePart.Body values can no longer be read. Context cancellation
+// cannot interrupt an arbitrary source Read, so it can delay Send's return.
 //
 // Retries: if the request body cannot be replayed, retries that would need to
 // resend the body return [ErrRequestBodyNotReplayable] instead of silently
@@ -357,34 +396,46 @@ func (b *RequestBuilder) Send(ctx context.Context) (*Response, error) {
 
 	resp, attempts, err := opened.do()
 	if err != nil {
+		opened.stopMultipart()
 		if opened.client.logger != nil {
 			opened.client.logger.Errorf("Error executing request: %v", err)
 		}
 		if resp != nil {
 			_ = resp.Body.Close()
 		}
-		return nil, err
+		return nil, errors.Join(err, opened.waitMultipart())
 	}
 
 	if resp == nil {
+		opened.stopMultipart()
 		if opened.client.logger != nil {
 			opened.client.logger.Errorf("Response is nil")
 		}
-		return nil, ErrResponseNil
+		return nil, errors.Join(ErrResponseNil, opened.waitMultipart())
 	}
 
-	response, err := newResponse(resp, &opened.client, opened.maxResponseBodyBytes)
+	if opened.multipartLifecycle != nil {
+		resp.Body = multipartResponseBody{ReadCloser: resp.Body, lifecycle: opened.multipartLifecycle}
+	}
+	response, responseErr := newResponse(resp, &opened.client, opened.maxResponseBodyBytes)
+	multipartErr := opened.waitMultipart()
+	if multipartErr != nil {
+		return nil, errors.Join(responseErr, multipartErr)
+	}
 	if response != nil {
 		response.elapsed = time.Since(opened.start)
 		response.attempts = attempts
 	}
-	return response, err
+	return response, responseErr
 }
 
 // SendStream sends the request and returns an unbuffered streaming response.
 // Invalid fluent preparation input is returned before any body or transport work.
 // If delivery returns both a response and an error, the returned StreamResponse
-// retains its metadata but is already closed; its body must not be read.
+// retains its metadata but is already closed; its body must not be read. A
+// successful streaming multipart request may continue reading borrowed parts
+// after SendStream returns; keep them open until StreamResponse.Close returns.
+// A blocked source Read can delay Close beyond the request deadline.
 func (b *RequestBuilder) SendStream(ctx context.Context) (*StreamResponse, error) {
 	if ctx == nil {
 		return nil, ErrRequestCreationFailed
@@ -406,24 +457,27 @@ func (b *RequestBuilder) SendStream(ctx context.Context) (*StreamResponse, error
 	}
 
 	if resp == nil {
+		opened.stopMultipart()
 		if opened.cancel != nil {
 			opened.cancel()
 		}
 		if err != nil {
-			return nil, err
+			return nil, errors.Join(err, opened.waitMultipart())
 		}
 		if opened.client.logger != nil {
 			opened.client.logger.Errorf("Response is nil")
 		}
-		return nil, ErrResponseNil
+		return nil, errors.Join(ErrResponseNil, opened.waitMultipart())
 	}
 
-	response := newStreamResponse(resp, opened.cancel)
+	response := newStreamResponse(resp, opened.cancel, opened.multipartLifecycle)
 	response.elapsed = time.Since(opened.start)
 	response.attempts = attempts
 	if err != nil {
-		_ = response.Close()
+		opened.stopMultipart()
+		closeErr := response.Close()
 		resp.Body = http.NoBody
+		return response, errors.Join(err, closeErr)
 	}
 	return response, err
 }

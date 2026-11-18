@@ -2,6 +2,8 @@ package requests
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -9,7 +11,10 @@ import (
 	"net/textproto"
 	"net/url"
 	"strings"
+	"sync"
 )
+
+var errMultipartBodyStopped = errors.New("multipart body stopped")
 
 // Multipart builds a multipart/form-data request body.
 type Multipart struct {
@@ -120,30 +125,34 @@ func validMultipartBoundary(boundary string) bool {
 	return true
 }
 
-func (m *Multipart) reader() (io.Reader, string, error) {
+func (m *Multipart) reader() (io.Reader, string, *multipartSourceLifecycle, error) {
 	if m.canReplay {
-		return m.bufferedReader()
+		reader, contentType, err := m.bufferedReader()
+		return reader, contentType, nil, err
 	}
 	return m.streamingReader()
 }
 
-func (m *Multipart) streamingReader() (io.Reader, string, error) {
+func (m *Multipart) streamingReader() (io.Reader, string, *multipartSourceLifecycle, error) {
 	reader, writer := io.Pipe()
 	multipartWriter := mimeMultipart.NewWriter(writer)
 	if err := m.setBoundary(multipartWriter); err != nil {
 		_ = writer.CloseWithError(err)
-		return nil, "", err
+		return nil, "", nil, err
 	}
+	lifecycle := &multipartSourceLifecycle{reader: reader, done: make(chan struct{})}
 
 	go func() {
-		err := m.writeTo(multipartWriter)
+		defer close(lifecycle.done)
+		err := m.writeTo(multipartWriter, lifecycle)
 		if closeErr := multipartWriter.Close(); err == nil {
 			err = closeErr
 		}
+		lifecycle.recordProducerError(err)
 		_ = writer.CloseWithError(err)
 	}()
 
-	return reader, multipartWriter.FormDataContentType(), nil
+	return &multipartStreamingBody{reader: reader, lifecycle: lifecycle}, multipartWriter.FormDataContentType(), lifecycle, nil
 }
 
 func (m *Multipart) bufferedReader() (io.Reader, string, error) {
@@ -157,7 +166,7 @@ func (m *Multipart) bufferedReader() (io.Reader, string, error) {
 	if err := m.setBoundary(multipartWriter); err != nil {
 		return nil, "", err
 	}
-	if err := m.writeTo(multipartWriter); err != nil {
+	if err := m.writeTo(multipartWriter, nil); err != nil {
 		return nil, "", err
 	}
 	if err := multipartWriter.Close(); err != nil {
@@ -176,7 +185,7 @@ func (m *Multipart) setBoundary(writer *mimeMultipart.Writer) error {
 	return nil
 }
 
-func (m *Multipart) writeTo(writer *mimeMultipart.Writer) error {
+func (m *Multipart) writeTo(writer *mimeMultipart.Writer, lifecycle *multipartSourceLifecycle) error {
 	for key, values := range m.fields {
 		for _, value := range values {
 			if err := writer.WriteField(key, value); err != nil {
@@ -186,7 +195,7 @@ func (m *Multipart) writeTo(writer *mimeMultipart.Writer) error {
 	}
 
 	for _, part := range m.parts {
-		if err := writeFilePart(writer, part); err != nil {
+		if err := writeFilePart(writer, part, lifecycle); err != nil {
 			return err
 		}
 	}
@@ -194,7 +203,7 @@ func (m *Multipart) writeTo(writer *mimeMultipart.Writer) error {
 	return nil
 }
 
-func writeFilePart(writer *mimeMultipart.Writer, part FilePart) error {
+func writeFilePart(writer *mimeMultipart.Writer, part FilePart, lifecycle *multipartSourceLifecycle) error {
 	if part.Field == "" {
 		return fmt.Errorf("%w: multipart field", ErrInvalidConfigValue)
 	}
@@ -209,10 +218,114 @@ func writeFilePart(writer *mimeMultipart.Writer, part FilePart) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(writerPart, part.Body); err != nil {
+	source := part.Body
+	if lifecycle != nil {
+		source = multipartSourceReader{source: part.Body, lifecycle: lifecycle}
+	}
+	if _, err := io.Copy(writerPart, source); err != nil {
 		return fmt.Errorf("copying file content failed: %w", err)
 	}
 	return nil
+}
+
+type multipartStreamingBody struct {
+	reader    *io.PipeReader
+	lifecycle *multipartSourceLifecycle
+}
+
+func (b *multipartStreamingBody) Read(p []byte) (int, error) {
+	return b.reader.Read(p)
+}
+
+func (b *multipartStreamingBody) Close() error {
+	b.lifecycle.stop()
+	return nil
+}
+
+type multipartSourceLifecycle struct {
+	reader          *io.PipeReader
+	done            chan struct{}
+	mu              sync.Mutex
+	stopped         bool
+	sourceErr       error
+	producerErr     error
+	stopOnce        sync.Once
+	contextStop     func() bool
+	contextStopDone chan struct{}
+	contextStopOnce sync.Once
+}
+
+func (l *multipartSourceLifecycle) read(source io.Reader, p []byte) (int, error) {
+	l.mu.Lock()
+	if l.stopped {
+		l.mu.Unlock()
+		return 0, io.EOF
+	}
+	l.mu.Unlock()
+
+	n, err := source.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) {
+		l.mu.Lock()
+		l.sourceErr = errors.Join(l.sourceErr, err)
+		l.mu.Unlock()
+	}
+	return n, err
+}
+
+func (l *multipartSourceLifecycle) stop() {
+	l.mu.Lock()
+	l.stopped = true
+	l.mu.Unlock()
+	l.stopOnce.Do(func() {
+		_ = l.reader.CloseWithError(errMultipartBodyStopped)
+	})
+}
+
+func (l *multipartSourceLifecycle) recordProducerError(err error) {
+	if err == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if errors.Is(err, errMultipartBodyStopped) || errors.Is(err, l.sourceErr) {
+		return
+	}
+	l.producerErr = errors.Join(l.producerErr, err)
+}
+
+func (l *multipartSourceLifecycle) watchContext(ctx context.Context) {
+	done := make(chan struct{})
+	l.contextStopDone = done
+	l.contextStop = context.AfterFunc(ctx, func() {
+		defer close(done)
+		l.stop()
+	})
+}
+
+func (l *multipartSourceLifecycle) stopContextCallback() {
+	l.contextStopOnce.Do(func() {
+		if l.contextStop != nil && !l.contextStop() {
+			<-l.contextStopDone
+		}
+	})
+}
+
+func (l *multipartSourceLifecycle) wait() error {
+	l.stop()
+	l.stopContextCallback()
+	<-l.done
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return errors.Join(l.sourceErr, l.producerErr)
+}
+
+type multipartSourceReader struct {
+	source    io.Reader
+	lifecycle *multipartSourceLifecycle
+}
+
+func (r multipartSourceReader) Read(p []byte) (int, error) {
+	return r.lifecycle.read(r.source, p)
 }
 
 func createFilePart(writer *mimeMultipart.Writer, part FilePart) (io.Writer, error) {

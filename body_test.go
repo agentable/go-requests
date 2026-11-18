@@ -266,6 +266,7 @@ func TestFormClonesCallerValues(t *testing.T) {
 
 func TestMultipartExplicitContentTypeReachesTransport(t *testing.T) {
 	client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		defer req.Body.Close() //nolint:errcheck // Test transport must close the request body.
 		assert.Equal(t, "application/vnd.example.upload", req.Header.Get("Content-Type"))
 		return &http.Response{
 			StatusCode: http.StatusNoContent,
