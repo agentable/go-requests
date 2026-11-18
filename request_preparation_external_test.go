@@ -438,27 +438,26 @@ func assertPreparationDTOHasNoDeliveryOrRevealSurface(t *testing.T) {
 	t.Helper()
 
 	types := map[reflect.Type][]string{
-		reflect.TypeOf(requests.RequestPreparation{}): {
+		reflect.TypeFor[requests.RequestPreparation](): {
 			"Body", "Cookies", "Headers", "Method", "OrderedHeaders", "Query", "Target",
 		},
-		reflect.TypeOf(requests.PreparedTarget{}):        {"Authority", "Path", "Scheme"},
-		reflect.TypeOf(requests.PreparedOccurrence{}):    {"Name", "Values"},
-		reflect.TypeOf(requests.PreparedHeader{}):        {"Name", "Values"},
-		reflect.TypeOf(requests.PreparedCookie{}):        {"Name", "Value"},
-		reflect.TypeOf(requests.PreparedBody{}):          {"Data", "Kind", "MediaType", "Multipart"},
-		reflect.TypeOf(requests.PreparedMultipart{}):     {"Fields", "Files"},
-		reflect.TypeOf(requests.PreparedMultipartFile{}): {"Field"},
-		reflect.TypeOf(requests.PreparedString{}):        {"State", "Value"},
-		reflect.TypeOf(requests.PreparedBytes{}):         {"Bytes", "State"},
+		reflect.TypeFor[requests.PreparedTarget]():        {"Authority", "Path", "Scheme"},
+		reflect.TypeFor[requests.PreparedOccurrence]():    {"Name", "Values"},
+		reflect.TypeFor[requests.PreparedHeader]():        {"Name", "Values"},
+		reflect.TypeFor[requests.PreparedCookie]():        {"Name", "Value"},
+		reflect.TypeFor[requests.PreparedBody]():          {"Data", "Kind", "MediaType", "Multipart"},
+		reflect.TypeFor[requests.PreparedMultipart]():     {"Fields", "Files"},
+		reflect.TypeFor[requests.PreparedMultipartFile](): {"Field"},
+		reflect.TypeFor[requests.PreparedString]():        {"State", "Value"},
+		reflect.TypeFor[requests.PreparedBytes]():         {"Bytes", "State"},
 	}
 	for typ, expected := range types {
-		for i := 0; i < typ.NumField(); i++ {
-			assert.NotEmpty(t, typ.Field(i).PkgPath, "%s field %s must stay unexported", typ, typ.Field(i).Name)
+		for field := range typ.Fields() {
+			assert.NotEmpty(t, field.PkgPath, "%s field %s must stay unexported", typ, field.Name)
 		}
 		pointer := reflect.PointerTo(typ)
 		actual := make([]string, 0, pointer.NumMethod())
-		for i := 0; i < pointer.NumMethod(); i++ {
-			method := pointer.Method(i)
+		for method := range pointer.Methods() {
 			actual = append(actual, method.Name)
 		}
 		slices.Sort(actual)

@@ -30,7 +30,6 @@ var (
 
 func BenchmarkProjectPreparedPublicForm(b *testing.B) {
 	for _, test := range publicFormBenchmarkCases() {
-		test := test
 		b.Run(test.name, func(b *testing.B) {
 			body := requestBodyPlan{
 				kind:            requestBodyForm,
@@ -59,7 +58,6 @@ func BenchmarkPreparePublicForm(b *testing.B) {
 		b.Fatal(err)
 	}
 	for _, test := range publicFormBenchmarkCases() {
-		test := test
 		builder := benchmarkPublicFormBuilder(client, test.occurrences)
 		b.Run(test.name, func(b *testing.B) {
 			b.ReportAllocs()
@@ -85,7 +83,6 @@ func BenchmarkPreparePublicBytes(b *testing.B) {
 		b.Fatal(err)
 	}
 	for _, test := range publicBytesBenchmarkCases() {
-		test := test
 		b.Run(test.name, func(b *testing.B) {
 			payload := PublicPayload(test.body)
 			builder := client.Post("https://example.test").BytesPayload(payload)

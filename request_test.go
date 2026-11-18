@@ -1967,7 +1967,7 @@ func TestSendInvalidResolvedURLDoesNotDispatch(t *testing.T) {
 
 	_, err := client.Post("/bad/%zz").Multipart(body).Send(t.Context())
 	require.Error(t, err)
-	assert.Zero(t, atomic.LoadInt64(&source.readBytes))
+	assert.Zero(t, source.readBytes.Load())
 	assert.False(t, source.closed.Load())
 	assert.False(t, called.Load())
 }
@@ -2383,7 +2383,7 @@ func TestRequestPreparationErrorKeepsFirstCause(t *testing.T) {
 	assert.Nil(t, resp)
 	assert.ErrorIs(t, err, assert.AnError)
 	assert.NotErrorIs(t, err, ErrInvalidConfigValue)
-	assert.Zero(t, atomic.LoadInt64(&source.readBytes))
+	assert.Zero(t, source.readBytes.Load())
 	assert.False(t, source.closed.Load())
 }
 
@@ -2519,7 +2519,7 @@ func TestInvalidResolvedMethodFailsBeforeOpeningMultipart(t *testing.T) {
 
 	assert.Nil(t, resp)
 	assert.ErrorIs(t, err, ErrRequestCreationFailed)
-	assert.Zero(t, atomic.LoadInt64(&source.readBytes))
+	assert.Zero(t, source.readBytes.Load())
 	assert.False(t, source.closed.Load())
 	assert.Zero(t, transportCalls.Load())
 }
@@ -2539,7 +2539,7 @@ func TestNilRequestContextFailsBeforeOpeningMultipart(t *testing.T) {
 
 	assert.Nil(t, resp)
 	assert.ErrorIs(t, err, ErrRequestCreationFailed)
-	assert.Zero(t, atomic.LoadInt64(&source.readBytes))
+	assert.Zero(t, source.readBytes.Load())
 	assert.False(t, source.closed.Load())
 	assert.Zero(t, transportCalls.Load())
 }
@@ -3444,9 +3444,9 @@ func TestReaderPreservesCurrentOffset(t *testing.T) {
 
 func TestDefaultRetryOn408And429(t *testing.T) {
 	t.Run("408", func(t *testing.T) {
-		var requestCount int32
+		var requestCount atomic.Int32
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			count := atomic.AddInt32(&requestCount, 1)
+			count := requestCount.Add(1)
 			if count == 1 {
 				w.WriteHeader(http.StatusRequestTimeout)
 				return
@@ -3461,13 +3461,13 @@ func TestDefaultRetryOn408And429(t *testing.T) {
 		)
 		_, err := client.Get("/").Send(context.Background())
 		assert.NoError(t, err)
-		assert.Equal(t, int32(2), requestCount)
+		assert.Equal(t, int32(2), requestCount.Load())
 	})
 
 	t.Run("429", func(t *testing.T) {
-		var requestCount int32
+		var requestCount atomic.Int32
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			count := atomic.AddInt32(&requestCount, 1)
+			count := requestCount.Add(1)
 			if count == 1 {
 				w.WriteHeader(http.StatusTooManyRequests)
 				return
@@ -3482,14 +3482,14 @@ func TestDefaultRetryOn408And429(t *testing.T) {
 		)
 		_, err := client.Get("/").Send(context.Background())
 		assert.NoError(t, err)
-		assert.Equal(t, int32(2), requestCount)
+		assert.Equal(t, int32(2), requestCount.Load())
 	})
 }
 
 func TestRetryAfterHeader(t *testing.T) {
-	var requestCount int32
+	var requestCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		count := atomic.AddInt32(&requestCount, 1)
+		count := requestCount.Add(1)
 		if count == 1 {
 			w.Header().Set("Retry-After", "0")
 			w.WriteHeader(http.StatusTooManyRequests)
@@ -3505,13 +3505,13 @@ func TestRetryAfterHeader(t *testing.T) {
 	)
 	_, err := client.Get("/").Send(context.Background())
 	assert.NoError(t, err)
-	assert.Equal(t, int32(2), requestCount)
+	assert.Equal(t, int32(2), requestCount.Load())
 }
 
 func TestRequestMaxRetriesZeroOverridesClientDefault(t *testing.T) {
-	var requestCount int32
+	var requestCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&requestCount, 1)
+		requestCount.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
@@ -3523,12 +3523,12 @@ func TestRequestMaxRetriesZeroOverridesClientDefault(t *testing.T) {
 	resp, err := client.Get("/").NoRetry().Send(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode())
-	assert.Equal(t, int32(1), requestCount)
+	assert.Equal(t, int32(1), requestCount.Load())
 	assert.Equal(t, 1, resp.Attempts())
 }
 
 func TestRetryReplaysJSON(t *testing.T) {
-	var requestCount int32
+	var requestCount atomic.Int32
 	var bodies []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -3538,7 +3538,7 @@ func TestRetryReplaysJSON(t *testing.T) {
 		}
 		bodies = append(bodies, string(body))
 
-		if atomic.AddInt32(&requestCount, 1) == 1 {
+		if requestCount.Add(1) == 1 {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -3553,7 +3553,7 @@ func TestRetryReplaysJSON(t *testing.T) {
 	resp, err := client.Post("/").JSON(map[string]string{"message": "hello"}).Send(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode())
-	assert.Equal(t, int32(2), requestCount)
+	assert.Equal(t, int32(2), requestCount.Load())
 	require.Len(t, bodies, 2)
 	assert.Equal(t, bodies[0], bodies[1])
 	assert.Equal(t, 2, resp.Attempts())
@@ -3608,14 +3608,14 @@ func TestRetryReplaysFormAndBytes(t *testing.T) {
 }
 
 func TestRetryRejectsNonReplayableBody(t *testing.T) {
-	var requestCount int32
+	var requestCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		atomic.AddInt32(&requestCount, 1)
+		requestCount.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
@@ -3627,18 +3627,18 @@ func TestRetryRejectsNonReplayableBody(t *testing.T) {
 	body := &io.LimitedReader{R: strings.NewReader("payload"), N: int64(len("payload"))}
 	_, err := client.Post("/").Reader(body, "text/plain").Send(context.Background())
 	assert.ErrorIs(t, err, ErrRequestBodyNotReplayable)
-	assert.Equal(t, int32(1), requestCount)
+	assert.Equal(t, int32(1), requestCount.Load())
 }
 
 func TestRetryRejectsNonReplayableJSONReader(t *testing.T) {
-	var requestCount int32
+	var requestCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		atomic.AddInt32(&requestCount, 1)
+		requestCount.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
@@ -3652,12 +3652,12 @@ func TestRetryRejectsNonReplayableJSONReader(t *testing.T) {
 		Reader(body, "application/json").
 		Send(context.Background())
 	assert.ErrorIs(t, err, ErrRequestBodyNotReplayable)
-	assert.Equal(t, int32(1), requestCount)
+	assert.Equal(t, int32(1), requestCount.Load())
 }
 
 type trackingReadCloser struct {
 	reader    *strings.Reader
-	readBytes int64
+	readBytes atomic.Int64
 	closed    atomic.Bool
 }
 
@@ -3699,7 +3699,7 @@ func newTrackingReadCloser(body string) *trackingReadCloser {
 
 func (b *trackingReadCloser) Read(p []byte) (int, error) {
 	n, err := b.reader.Read(p)
-	atomic.AddInt64(&b.readBytes, int64(n))
+	b.readBytes.Add(int64(n))
 	return n, err
 }
 
@@ -3710,10 +3710,10 @@ func (b *trackingReadCloser) Close() error {
 
 func TestRetryDrainsResponseBodyBeforeRetry(t *testing.T) {
 	retryBody := newTrackingReadCloser("retry body")
-	var attempts int32
+	var attempts atomic.Int32
 	client := newTestClient(t,
 		WithHTTPClient(&http.Client{Transport: testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
-			if atomic.AddInt32(&attempts, 1) == 1 {
+			if attempts.Add(1) == 1 {
 				return &http.Response{
 					Status:     "500 Internal Server Error",
 					StatusCode: http.StatusInternalServerError,
@@ -3737,17 +3737,17 @@ func TestRetryDrainsResponseBodyBeforeRetry(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode())
 	assert.Equal(t, "ok", resp.String())
-	assert.Equal(t, int32(2), attempts)
-	assert.Equal(t, int64(len("retry body")), atomic.LoadInt64(&retryBody.readBytes))
+	assert.Equal(t, int32(2), attempts.Load())
+	assert.Equal(t, int64(len("retry body")), retryBody.readBytes.Load())
 	assert.True(t, retryBody.closed.Load())
 }
 
 func TestRetryDrainsResponseBodyWithLimit(t *testing.T) {
 	retryBody := newTrackingReadCloser(strings.Repeat("x", maxRetryDrainBytes+1))
-	var attempts int32
+	var attempts atomic.Int32
 	client := newTestClient(t,
 		WithHTTPClient(&http.Client{Transport: testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
-			if atomic.AddInt32(&attempts, 1) == 1 {
+			if attempts.Add(1) == 1 {
 				return &http.Response{
 					Status:     "500 Internal Server Error",
 					StatusCode: http.StatusInternalServerError,
@@ -3770,7 +3770,7 @@ func TestRetryDrainsResponseBodyWithLimit(t *testing.T) {
 	resp, err := client.Get("http://example.com").Send(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode())
-	assert.Equal(t, int64(maxRetryDrainBytes), atomic.LoadInt64(&retryBody.readBytes))
+	assert.Equal(t, int64(maxRetryDrainBytes), retryBody.readBytes.Load())
 	assert.True(t, retryBody.closed.Load())
 }
 
@@ -3850,9 +3850,9 @@ func TestRetrySkipsCleanupForRedirectErrorResponse(t *testing.T) {
 }
 
 func TestRequestLevelRetries(t *testing.T) {
-	var requestCount int32
+	var requestCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		count := atomic.AddInt32(&requestCount, 1)
+		count := requestCount.Add(1)
 		if count == 1 {
 			// Simulate a server error on the first request
 			w.WriteHeader(http.StatusInternalServerError)
@@ -3884,8 +3884,8 @@ func TestRequestLevelRetries(t *testing.T) {
 
 	// Verify that the retry logic was applied
 	expectedAttempts := int32(2)
-	if requestCount != expectedAttempts {
-		t.Errorf("Expected %d attempts, got %d", expectedAttempts, requestCount)
+	if requestCount.Load() != expectedAttempts {
+		t.Errorf("Expected %d attempts, got %d", expectedAttempts, requestCount.Load())
 	}
 }
 
