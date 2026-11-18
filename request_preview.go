@@ -433,8 +433,7 @@ func (b *RequestBuilder) Preview(ctx context.Context) (*RequestPreview, error) {
 
 	plan, err := b.compileRequestPlanSnapshot(snap)
 	if err != nil {
-		var creation *requestPlanCreationError
-		if errors.As(err, &creation) {
+		if _, ok := errors.AsType[*requestPlanCreationError](err); ok {
 			return nil, ErrRequestCreationFailed
 		}
 		return nil, err

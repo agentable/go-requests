@@ -3,6 +3,7 @@ package requests
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -171,12 +172,7 @@ func (e *requestPlanCreationError) Is(target error) bool {
 
 func snapshotRequestTarget(b *RequestBuilder) requestTarget {
 	target := b.target
-	if target.pathParams != nil {
-		target.pathParams = make(map[string]Value, len(target.pathParams))
-		for name, value := range b.target.pathParams {
-			target.pathParams[name] = value
-		}
-	}
+	target.pathParams = maps.Clone(target.pathParams)
 	return target
 }
 
@@ -269,11 +265,8 @@ func countQueryNameToken(rawQuery, token string) int {
 		return 0
 	}
 	count := 0
-	for _, occurrence := range strings.Split(rawQuery, "&") {
-		name := occurrence
-		if index := strings.IndexByte(name, '='); index >= 0 {
-			name = name[:index]
-		}
+	for occurrence := range strings.SplitSeq(rawQuery, "&") {
+		name, _, _ := strings.Cut(occurrence, "=")
 		count += strings.Count(name, token)
 	}
 	return count

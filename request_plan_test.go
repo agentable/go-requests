@@ -182,6 +182,17 @@ func TestRequestPlanPathParamValueTraceAndEscaping(t *testing.T) {
 	assert.Equal(t, 1, queryParam.queryNameOccurrences)
 	assert.Equal(t, 1, queryParam.fragmentOccurrences)
 
+	repeatedQuery := "/items?&{id}=first&{id}&{id}=one={id}&literal={id}&&%7Bid%7D=encoded&"
+	repeatedFacts, err := newTestClient(t).Get(repeatedQuery).
+		PathValue(Public(repeatedQuery)).
+		PathParamValue("id", Public("query-name")).
+		compileRequestPlan()
+	require.NoError(t, err)
+	repeatedParam := findPathParamTrace(repeatedFacts.pathTrace.params, "id")
+	require.NotNil(t, repeatedParam)
+	assert.Equal(t, 3, repeatedParam.queryNameOccurrences)
+	assert.Equal(t, "&query-name=first&query-name&query-name=one=query-name&literal=query-name&&%7Bid%7D=encoded&", repeatedFacts.targetURL.RawQuery)
+
 	unmatched := "/items/{missing}"
 	unmatchedFacts, err := newTestClient(t).Get(unmatched).
 		PathValue(Public(unmatched)).

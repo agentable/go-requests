@@ -86,8 +86,7 @@ func (b *RequestBuilder) compileDeliverySnapshot() (*deliverySnapshot, error) {
 	snap := b.client.snapshot()
 	plan, err := b.compileRequestPlanSnapshot(snap)
 	if err != nil {
-		var creation *requestPlanCreationError
-		if errors.As(err, &creation) {
+		if creation, ok := errors.AsType[*requestPlanCreationError](err); ok {
 			if snap.logger != nil {
 				snap.logger.Errorf("Error creating request: %v", sanitizeURLDiagnosticError(creation.cause))
 			}
