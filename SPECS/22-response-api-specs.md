@@ -56,6 +56,8 @@ verify that a positive buffering limit does not pre-read or truncate streams.
 
 These helpers describe response metadata only. They do not change delivery behavior.
 `Header()` and `URL()` return snapshots; intentional mutation goes through `Raw()`.
+`ContentType()` reads the current `Content-Type` value directly and returns it
+as a string.
 
 Diagnostics:
 

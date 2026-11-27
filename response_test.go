@@ -92,6 +92,20 @@ func TestResponseContentType(t *testing.T) {
 	}
 }
 
+func BenchmarkResponseContentType(b *testing.B) {
+	response := &Response{rawResponse: &http.Response{Header: http.Header{
+		"Content-Type": {"application/json"},
+		"Set-Cookie":   {"first=a", "second=b"},
+		"Vary":         {"Accept-Encoding", "Accept-Language"},
+	}}}
+	b.ReportAllocs()
+	for b.Loop() {
+		if response.ContentType() != "application/json" {
+			b.Fatal("unexpected content type")
+		}
+	}
+}
+
 func TestResponseRejectsJSONPMediaType(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/jsonp")

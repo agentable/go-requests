@@ -163,7 +163,7 @@ func (r *Response) TLS() *tls.ConnectionState {
 
 // ContentType returns the value of the "Content-Type" header.
 func (r *Response) ContentType() string {
-	return r.Header().Get("Content-Type")
+	return r.rawResponse.Header.Get("Content-Type")
 }
 
 // IsContentType checks if the response Content-Type header matches a given content type.
@@ -238,7 +238,8 @@ func (r *Response) String() string {
 
 // Decode decodes the response body based on its content type.
 func (r *Response) Decode(v any) error {
-	switch classifyMediaType(r.ContentType()) {
+	contentType := r.ContentType()
+	switch classifyMediaType(contentType) {
 	case mediaJSON:
 		return r.DecodeJSON(v)
 	case mediaXML:
@@ -246,7 +247,7 @@ func (r *Response) Decode(v any) error {
 	case mediaYAML:
 		return r.DecodeYAML(v)
 	default:
-		return fmt.Errorf("%w: %s", ErrUnsupportedContentType, r.ContentType())
+		return fmt.Errorf("%w: %s", ErrUnsupportedContentType, contentType)
 	}
 }
 

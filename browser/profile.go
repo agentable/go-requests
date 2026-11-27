@@ -9,7 +9,6 @@ import (
 type profile struct {
 	name    string
 	headers *orderedobject.Object[[]string]
-	http2   bool
 }
 
 // Chrome145 returns a fixed Chrome 145 identity profile.
@@ -17,7 +16,6 @@ func Chrome145() requests.Profile {
 	return profile{
 		name:    "Chrome145",
 		headers: chromeHeaders(),
-		http2:   true,
 	}
 }
 
@@ -26,7 +24,6 @@ func Firefox148() requests.Profile {
 	return profile{
 		name:    "Firefox148",
 		headers: firefoxHeaders(),
-		http2:   true,
 	}
 }
 
@@ -35,11 +32,7 @@ func (p profile) Name() string {
 }
 
 func (p profile) Options() []requests.Option {
-	opts := []requests.Option{requests.WithOrderedHeaders(p.headers)}
-	if p.http2 {
-		opts = append(opts, requests.WithHTTP2())
-	}
-	return opts
+	return []requests.Option{requests.WithOrderedHeaders(p.headers), requests.WithHTTP2()}
 }
 
 func chromeHeaders() *orderedobject.Object[[]string] {

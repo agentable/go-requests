@@ -119,7 +119,7 @@ func utlsConfig(config *tls.Config) *utls.Config {
 		SessionTicketsDisabled:      clone.SessionTicketsDisabled,
 		MinVersion:                  clone.MinVersion,
 		MaxVersion:                  clone.MaxVersion,
-		CurvePreferences:            utlsCurvePreferences(clone.CurvePreferences),
+		CurvePreferences:            convertSlice[utls.CurveID](clone.CurvePreferences),
 		DynamicRecordSizingDisabled: clone.DynamicRecordSizingDisabled,
 		Renegotiation:               utls.RenegotiationSupport(clone.Renegotiation),
 		KeyLogWriter:                clone.KeyLogWriter,
@@ -135,21 +135,13 @@ func utlsCertificates(certs []tls.Certificate) []utls.Certificate {
 		converted[i] = utls.Certificate{
 			Certificate:                  cloneByteSlices(cert.Certificate),
 			PrivateKey:                   cert.PrivateKey,
-			SupportedSignatureAlgorithms: utlsSignatureSchemes(cert.SupportedSignatureAlgorithms),
+			SupportedSignatureAlgorithms: convertSlice[utls.SignatureScheme](cert.SupportedSignatureAlgorithms),
 			OCSPStaple:                   slices.Clone(cert.OCSPStaple),
 			SignedCertificateTimestamps:  cloneByteSlices(cert.SignedCertificateTimestamps),
 			Leaf:                         cert.Leaf,
 		}
 	}
 	return converted
-}
-
-func utlsSignatureSchemes(schemes []tls.SignatureScheme) []utls.SignatureScheme {
-	return convertSlice[utls.SignatureScheme](schemes)
-}
-
-func utlsCurvePreferences(curves []tls.CurveID) []utls.CurveID {
-	return convertSlice[utls.CurveID](curves)
 }
 
 func convertSlice[To, From ~uint16](values []From) []To {

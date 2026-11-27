@@ -73,10 +73,6 @@ func WithLogger(logger *slog.Logger) Option {
 
 // Transport returns a configured HTTP/3 transport.
 func Transport(opts ...Option) *qhttp3.Transport {
-	return newSettings(opts...).transport()
-}
-
-func newSettings(opts ...Option) settings {
 	var s settings
 	for _, opt := range opts {
 		if opt == nil {
@@ -84,10 +80,6 @@ func newSettings(opts ...Option) settings {
 		}
 		opt(&s)
 	}
-	return s
-}
-
-func (s settings) transport() *qhttp3.Transport {
 	return &qhttp3.Transport{
 		TLSClientConfig:        cloneTLSConfig(s.tlsConfig),
 		QUICConfig:             cloneQUICConfig(s.quicConfig, s.enableDatagrams),
