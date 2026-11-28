@@ -643,6 +643,12 @@ report the declared length and known non-replayability without consulting the
 reader; Prepare continues to redact its opaque contents. The normal transport
 contract validates actual bytes against a positive declared length.
 
+`Reader` and `SizedReader` borrow a plain `io.Reader`. A source implementing
+`io.ReadCloser` is closed once as part of request cleanup. A zero-length
+`SizedReader` skips both reads and closing. `Send` and unsuccessful `SendStream`
+return after the request body can no longer read the source. Successful
+`SendStream` leaves that cleanup to `StreamResponse.Close()`.
+
 `Encoder.Encode` returns an `io.Reader` whose complete lifecycle contract is
 reading. The request pipeline reads the value and MUST NOT discover or invoke
 an additional `Close` method based on its dynamic type.
@@ -726,10 +732,10 @@ response reading. The effective deadline is the earlier of the parent context
 deadline and the request-local deadline. It never extends a parent's deadline
 or cancels the parent when the request finishes or reaches its local limit.
 
-For default streaming multipart, the deadline stops the request pipe but cannot
-force an arbitrary borrowed `FilePart.Body.Read` to return. Cleanup may therefore
-keep `Send` or `StreamResponse.Close()` waiting beyond that deadline until the
-caller unblocks the source.
+The deadline stops the default streaming multipart request pipe. A raw reader
+or borrowed `FilePart.Body` can remain blocked in `Read` beyond the deadline.
+`Send`, unsuccessful `SendStream`, and `StreamResponse.Close()` wait for those
+reads to return before completing request cleanup.
 
 Zero timeout means no request-local deadline. A negative timeout is invalid and
 returns `ErrInvalidConfigValue` through the preparation-error contract.

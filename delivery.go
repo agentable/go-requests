@@ -72,6 +72,7 @@ type openedDelivery struct {
 	retryPolicy          RetryPolicy
 	maxResponseBodyBytes int64
 	multipartLifecycle   *multipartSourceLifecycle
+	rawBody              *deliveryBody
 	cancel               context.CancelFunc
 	start                time.Time
 }
@@ -185,6 +186,11 @@ func (s *deliverySnapshot) openDelivery(ctx context.Context) (*openedDelivery, e
 	req.GetBody = preparedBody.getBody
 	req.ContentLength = preparedBody.contentLength
 	req = applyPlanAuthAndHeaders(req, s.plan, preparedBody.contentType)
+	var rawBody *deliveryBody
+	if s.plan.body.kind == requestBodyReader && req.Body != nil && req.Body != http.NoBody {
+		rawBody = &deliveryBody{Reader: req.Body, close: sync.OnceValue(req.Body.Close), reads: &rawBodyReads{}}
+		req.Body = rawBody
+	}
 	if preparedBody.multipartLifecycle != nil {
 		preparedBody.multipartLifecycle.watchContext(req.Context())
 	}
@@ -196,6 +202,7 @@ func (s *deliverySnapshot) openDelivery(ctx context.Context) (*openedDelivery, e
 		retryPolicy:          s.retryPolicy,
 		maxResponseBodyBytes: s.maxResponseBodyBytes,
 		multipartLifecycle:   preparedBody.multipartLifecycle,
+		rawBody:              rawBody,
 		cancel:               cancel,
 		start:                start,
 	}, nil
@@ -237,17 +244,53 @@ func (b multipartResponseBody) Close() error {
 type deliveryBody struct {
 	io.Reader
 	close func() error
+	reads *rawBodyReads
 }
 
-func (b *deliveryBody) Close() error { return b.close() }
+type rawBodyReads struct {
+	// Closing admission under mu makes waiting safe even when no read has started.
+	mu      sync.Mutex
+	active  sync.WaitGroup
+	stopped bool
+}
+
+func (b *deliveryBody) Read(p []byte) (int, error) {
+	if b.reads != nil {
+		b.reads.mu.Lock()
+		if b.reads.stopped {
+			b.reads.mu.Unlock()
+			return 0, io.ErrClosedPipe
+		}
+		b.reads.active.Add(1)
+		b.reads.mu.Unlock()
+		defer b.reads.active.Done()
+	}
+	return b.Reader.Read(p)
+}
+
+func (b *deliveryBody) Close() error {
+	if b.reads != nil {
+		b.reads.mu.Lock()
+		b.reads.stopped = true
+		b.reads.mu.Unlock()
+	}
+	return b.close()
+}
+
+func (b *deliveryBody) finishRawBody() {
+	if b != nil {
+		_ = b.Close()
+		b.reads.active.Wait()
+	}
+}
 
 func (d *openedDelivery) do() (*http.Response, int, error) {
 	attempts := 0
 	req := d.request
 	snap := &d.client
 	ctx := req.Context()
-	var originalBody *deliveryBody
-	if req.Body != nil && req.Body != http.NoBody {
+	originalBody := d.rawBody
+	if originalBody == nil && req.Body != nil && req.Body != http.NoBody {
 		originalBody = &deliveryBody{Reader: req.Body, close: sync.OnceValue(req.Body.Close)}
 		req.Body = originalBody
 	}
@@ -372,8 +415,9 @@ func drainAndCloseBody(body io.ReadCloser) error {
 // is closed internally. On success, Send fully reads and closes the transport
 // body before returning the buffered Response; caller cleanup is not required
 // for connection reuse. For default streaming multipart, Send also waits until
-// borrowed FilePart.Body values can no longer be read. Context cancellation
-// cannot interrupt an arbitrary source Read, so it can delay Send's return.
+// borrowed FilePart.Body values can no longer be read. Send also waits for
+// active Reader and SizedReader source reads. Context cancellation cannot
+// interrupt an arbitrary source Read, so it can delay Send's return.
 //
 // Retries: if the request body cannot be replayed, retries that would need to
 // resend the body return [ErrRequestBodyNotReplayable] instead of silently
@@ -390,6 +434,7 @@ func (b *RequestBuilder) Send(ctx context.Context) (*Response, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer opened.rawBody.finishRawBody()
 	if opened.cancel != nil {
 		defer opened.cancel()
 	}
@@ -397,6 +442,9 @@ func (b *RequestBuilder) Send(ctx context.Context) (*Response, error) {
 	resp, attempts, err := opened.do()
 	if err != nil {
 		opened.stopMultipart()
+		if opened.rawBody != nil {
+			_ = opened.rawBody.Close()
+		}
 		if opened.client.logger != nil {
 			opened.client.logger.Errorf("Error executing request: %v", err)
 		}
@@ -435,7 +483,8 @@ func (b *RequestBuilder) Send(ctx context.Context) (*Response, error) {
 // retains its metadata but is already closed; its body must not be read. A
 // successful streaming multipart request may continue reading borrowed parts
 // after SendStream returns; keep them open until StreamResponse.Close returns.
-// A blocked source Read can delay Close beyond the request deadline.
+// Raw Reader and SizedReader sources have the same read completion boundary.
+// A blocked source Read can delay Close or failed delivery beyond the deadline.
 func (b *RequestBuilder) SendStream(ctx context.Context) (*StreamResponse, error) {
 	if ctx == nil {
 		return nil, ErrRequestCreationFailed
@@ -461,6 +510,7 @@ func (b *RequestBuilder) SendStream(ctx context.Context) (*StreamResponse, error
 		if opened.cancel != nil {
 			opened.cancel()
 		}
+		opened.rawBody.finishRawBody()
 		if err != nil {
 			return nil, errors.Join(err, opened.waitMultipart())
 		}
@@ -470,7 +520,7 @@ func (b *RequestBuilder) SendStream(ctx context.Context) (*StreamResponse, error
 		return nil, errors.Join(ErrResponseNil, opened.waitMultipart())
 	}
 
-	response := newStreamResponse(resp, opened.cancel, opened.multipartLifecycle)
+	response := newStreamResponse(resp, opened.cancel, opened.multipartLifecycle, opened.rawBody)
 	response.elapsed = time.Since(opened.start)
 	response.attempts = attempts
 	if err != nil {

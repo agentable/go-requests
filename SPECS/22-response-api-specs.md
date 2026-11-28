@@ -20,6 +20,9 @@ are best-effort and do not replace a successful result or a read error. The
 `Raw().Body` exposed on success is the replacement reader over owned bytes, not
 the live transport body.
 
+For `Reader` and `SizedReader`, `Send` waits for active source reads to return
+and prevents further reads from the original request body before it returns.
+
 `RequestBuilder.MaxResponseBodyBytes` can bound buffering for one `Send` call.
 Zero means unlimited. When a positive ceiling is exceeded, `Send` closes the
 transport body exactly once and returns no partial `Response`. The error matches

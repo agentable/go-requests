@@ -21,6 +21,7 @@ type StreamResponse struct {
 	closeOnce          sync.Once
 	closeErr           error
 	multipartLifecycle *multipartSourceLifecycle
+	rawBody            *deliveryBody
 	rawResponse        *http.Response
 }
 
@@ -28,11 +29,13 @@ func newStreamResponse(
 	resp *http.Response,
 	cancel context.CancelFunc,
 	multipartLifecycle *multipartSourceLifecycle,
+	rawBody *deliveryBody,
 ) *StreamResponse {
 	return &StreamResponse{
 		rawResponse:        resp,
 		cancel:             cancel,
 		multipartLifecycle: multipartLifecycle,
+		rawBody:            rawBody,
 	}
 }
 
@@ -95,9 +98,9 @@ func (r *StreamResponse) Lines() iter.Seq2[[]byte, error] {
 }
 
 // Close stops a default streaming multipart producer, closes the response body,
-// and releases the request context. It waits until borrowed parts can no longer
-// be read and joins producer errors with the response body close error. The
-// library does not close borrowed parts; a blocked source Read can delay Close.
+// and releases the request context. It waits for active request source reads
+// and joins multipart producer errors with the response body close error.
+// A blocked source Read can delay Close. Multipart parts remain borrowed.
 func (r *StreamResponse) Close() error {
 	r.closeOnce.Do(func() {
 		if r.multipartLifecycle != nil {
@@ -106,12 +109,18 @@ func (r *StreamResponse) Close() error {
 		if r.cancel != nil {
 			r.cancel()
 		}
+		if r.rawBody != nil {
+			_ = r.rawBody.Close()
+		}
 		var bodyErr error
 		if r.rawResponse != nil && r.rawResponse.Body != nil {
 			bodyErr = r.rawResponse.Body.Close()
 		}
 		if r.multipartLifecycle != nil {
 			bodyErr = errors.Join(bodyErr, r.multipartLifecycle.wait())
+		}
+		if r.rawBody != nil {
+			r.rawBody.reads.active.Wait()
 		}
 		r.closeErr = bodyErr
 	})

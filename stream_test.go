@@ -129,7 +129,7 @@ func TestStreamResponseCloseCancelsBeforeClosingBody(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		closeErr := errors.New("close failed")
 		body := &contextBoundCloseBody{done: ctx.Done(), closeErr: closeErr}
-		resp := newStreamResponse(&http.Response{Body: body}, cancel, nil)
+		resp := newStreamResponse(&http.Response{Body: body}, cancel, nil, nil)
 		closeDone := make(chan error, 1)
 
 		go func() {

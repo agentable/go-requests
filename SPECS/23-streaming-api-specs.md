@@ -32,9 +32,13 @@ response body to EOF or closing `Body()` alone does not finish this cleanup.
 Errors from the producer are joined with a response-body close error and
 returned by `Close()`.
 
-An arbitrary borrowed `Read` cannot be forcibly interrupted by request
-cancellation. If a source remains blocked, `Close()` may wait beyond the request
-deadline until the caller independently unblocks that read.
+For `Reader` and `SizedReader`, `Close()` also closes the original request
+body and waits for its active source reads. Further reads on that body cannot
+reach the source. The request cleanup closes sources that implement
+`io.ReadCloser` once and leaves a plain `io.Reader` in the caller's care.
+
+An arbitrary source `Read` can remain blocked after request cancellation. If it
+does, `Close()` can wait beyond the request deadline until the read returns.
 
 `Elapsed()` returns the duration from request dispatch through stream response
 setup; it does not include a later `Close()` wait. `Attempts()` returns transport
@@ -44,11 +48,10 @@ When delivery returns both an HTTP response and an error, `SendStream` returns
 both a non-nil `StreamResponse` and that error. Its status, headers, URL, elapsed
 time, and attempt count remain available as evidence of the received response;
 the body is already closed and must not be read. Any derived context is canceled
-before body cleanup, and producer cleanup is complete before the method returns.
+before body cleanup, and request source reads have ended before the method returns.
 A subsequent `Close` is idempotent. A rejected redirect preserves the response
 metadata without closing the body a second time after `net/http` has closed it.
-Transport errors without a response still return nil after multipart producer
-cleanup.
+Transport errors without a response still return nil after request-body cleanup.
 
 `Header()` and `URL()` return snapshots; callers that intentionally need to mutate the underlying response use `Raw()`.
 

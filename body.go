@@ -273,7 +273,8 @@ func (b *RequestBuilder) Reader(r io.Reader, contentType string) *RequestBuilder
 
 // SizedReader sets a one-shot raw body with its exact byte length and optional
 // Content-Type. It does not read or snapshot r, even when r is seekable, and
-// never installs a replay callback. The transport owns closing r after delivery.
+// never installs a replay callback. A source implementing io.ReadCloser is
+// closed as part of request cleanup.
 // Zero selects an empty body without reading or closing r. A negative length
 // records ErrInvalidConfigValue before reading the body or dispatching the request.
 func (b *RequestBuilder) SizedReader(r io.Reader, contentType string, contentLength int64) *RequestBuilder {

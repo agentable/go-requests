@@ -572,16 +572,25 @@ if err != nil {
 }
 ```
 
+For `Reader` and `SizedReader`, `Send` waits for the request body to finish
+reading the source. After a successful `SendStream`, keep the source usable
+until `StreamResponse.Close()` returns. A failed `SendStream` waits before
+returning, including when it returns closed response metadata.
+
+An `io.Reader` without a `Close` method stays in the caller's care. A source
+that implements `io.ReadCloser` is closed as part of request cleanup. A
+zero-length `SizedReader` leaves the source untouched.
+
 ## Retries and Delivery
 
 Use `client.Get(path).Timeout(d).Send(ctx)` to bound a request, including retries
 and response reading. A positive `d` applies even when `ctx` already has a
 deadline; the earlier deadline wins. Zero adds no request-local deadline.
-Completing the request leaves the parent context usable. With default streaming
-multipart, cancellation stops the request pipe but cannot force a borrowed
-reader's active `Read` to return, so `Send` or `StreamResponse.Close()` may wait
-past the deadline. With `SendStream`, close the returned response to release its
-request context and finish the multipart borrow.
+Completing the request leaves the parent context usable. Cancellation stops the
+default multipart request pipe. An arbitrary source `Read` can remain blocked
+after cancellation, so `Send`, failed `SendStream`, or `StreamResponse.Close()`
+may wait past the deadline until the read returns. Close a successful streaming
+response to release the request context and finish request-body cleanup.
 
 ### Client-level retries
 

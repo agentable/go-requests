@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -38,6 +39,166 @@ func TestSizedReaderPreservesOneShotLength(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, resp.Close())
 			assert.Equal(t, 1, calls)
+		})
+	}
+}
+
+func TestRawReaderStreamCloseWaitsForSource(t *testing.T) {
+	for _, sized := range []bool{false, true} {
+		name := "Reader"
+		if sized {
+			name = "SizedReader"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				entered := make(chan struct{})
+				release := make(chan struct{})
+				readDone := make(chan struct{})
+				released := false
+				defer func() {
+					if !released {
+						close(release)
+					}
+				}()
+				source := &multipartLifecycleReader{entered: entered, release: release}
+				reader := struct{ io.Reader }{source}
+				var body io.ReadCloser
+				client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					body = req.Body
+					go func() {
+						defer close(readDone)
+						_, _ = io.Copy(io.Discard, req.Body)
+						_ = req.Body.Close()
+					}()
+					<-entered
+					return &http.Response{StatusCode: http.StatusRequestEntityTooLarge, Body: http.NoBody, Request: req}, nil
+				})))
+				builder := client.Post("https://example.test").NoRetry()
+				if sized {
+					builder.SizedReader(reader, "text/plain", 1)
+				} else {
+					builder.Reader(reader, "text/plain")
+				}
+				response, err := builder.SendStream(t.Context())
+				require.NoError(t, err)
+				assert.Equal(t, http.StatusRequestEntityTooLarge, response.StatusCode())
+				closed := make(chan error, 1)
+				go func() { closed <- response.Close() }()
+				synctest.Wait()
+				assert.Empty(t, closed, "Close returned while the raw source was still being read")
+				close(release)
+				released = true
+				require.NoError(t, <-closed)
+				<-readDone
+				_, _ = body.Read(make([]byte, 1))
+				assert.EqualValues(t, 1, source.reads.Load(), "closed request body read the source again")
+				assert.Zero(t, source.closes.Load(), "the borrowed reader was closed")
+			})
+		})
+	}
+}
+
+func TestRawReaderDeliveryWaitsForSource(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		streamErr error
+	}{
+		{name: "buffered response"},
+		{name: "canceled stream", streamErr: context.Canceled},
+		{name: "transport failure", streamErr: errors.New("transport failed")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				entered := make(chan struct{})
+				release := make(chan struct{})
+				readDone := make(chan struct{})
+				source := &multipartLifecycleReader{entered: entered, release: release}
+				client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					go func() {
+						defer close(readDone)
+						_, _ = io.Copy(io.Discard, req.Body)
+						_ = req.Body.Close()
+					}()
+					<-entered
+					if errors.Is(test.streamErr, context.Canceled) {
+						<-req.Context().Done()
+					}
+					if test.streamErr != nil {
+						return nil, test.streamErr
+					}
+					return &http.Response{StatusCode: http.StatusRequestEntityTooLarge, Body: http.NoBody, Request: req}, nil
+				})))
+				builder := client.Post("https://example.test").Reader(struct{ io.Reader }{source}, "text/plain").NoRetry()
+				finished := make(chan error, 1)
+				go func() {
+					if test.streamErr == nil {
+						_, err := builder.Send(ctx)
+						finished <- err
+						return
+					}
+					_, err := builder.SendStream(ctx)
+					finished <- err
+				}()
+				<-entered
+				if errors.Is(test.streamErr, context.Canceled) {
+					cancel()
+				}
+				synctest.Wait()
+				assert.Empty(t, finished, "delivery returned while the raw source was still being read")
+				close(release)
+				assert.ErrorIs(t, <-finished, test.streamErr)
+				<-readDone
+				assert.EqualValues(t, 1, source.reads.Load())
+				assert.Zero(t, source.closes.Load())
+			})
+		})
+	}
+}
+
+type replaceBodyAuth struct{ body io.ReadCloser }
+
+func (a replaceBodyAuth) Apply(req *http.Request) { req.Body = a.body }
+func (replaceBodyAuth) Valid() bool               { return true }
+
+func TestRawReaderStreamClosesOwnedSourceOnce(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		replaceBody bool
+	}{
+		{name: "sized reader"},
+		{name: "authentication replacement", replaceBody: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				reader, writer := io.Pipe()
+				defer func() { _ = writer.Close() }()
+				closed := make(chan struct{}, 2)
+				source := &closeSignalBody{ReadCloser: reader, closed: closed}
+				readDone := make(chan struct{})
+				client := newTestClient(t, WithTransport(testRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					go func() {
+						defer close(readDone)
+						_, _ = io.Copy(io.Discard, req.Body)
+						_ = req.Body.Close()
+					}()
+					synctest.Wait()
+					return &http.Response{StatusCode: http.StatusRequestEntityTooLarge, Body: http.NoBody, Request: req}, nil
+				})))
+				builder := client.Post("https://example.test").NoRetry()
+				if test.replaceBody {
+					builder.SizedReader(strings.NewReader("x"), "text/plain", 1).Auth(replaceBodyAuth{body: source})
+				} else {
+					builder.SizedReader(source, "text/plain", 1)
+				}
+				response, err := builder.SendStream(t.Context())
+				require.NoError(t, err)
+				require.NoError(t, response.Close())
+				<-readDone
+				require.NoError(t, response.Close())
+				assert.Len(t, closed, 1)
+			})
 		})
 	}
 }

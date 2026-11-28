@@ -19,8 +19,10 @@ counts, replace-body lease state machines, new cancellation guarantees for
 arbitrary readers, or a second retry/redirect model. Only the smallest cleanup
 needed before the first transport attempt is permitted: a library-owned body
 wrapper that has not yet been handed to `net/http` may be closed on delivery
-materialization failure. Encoder-returned readers, caller-provided readers, and nested
-multipart parts remain borrowed and are not dynamically closed.
+materialization failure. Encoder-returned readers, plain `io.Reader` sources, and
+nested multipart parts remain borrowed. During delivery, a raw source that
+implements `io.ReadCloser` participates in the standard request-body close
+contract.
 
 ## Retry Policy
 
@@ -99,6 +101,7 @@ The retry loop respects the request context.
 
 - If the context is canceled or reaches its deadline during backoff, delivery stops and returns `ctx.Err()`.
 - For default streaming multipart, cancellation or timeout stops the library-owned request pipe but cannot interrupt an arbitrary borrowed `FilePart.Body.Read`. `Send` and failed `SendStream` exits wait for producer cleanup, so they may return after the request deadline once the caller unblocks the source.
+- For `Reader` and `SizedReader`, `Send` and failed `SendStream` close the original request body and wait for its active source reads. Successful `SendStream` completes that cleanup at `StreamResponse.Close()`. The wait can extend beyond the request deadline if a source remains blocked.
 - Before sleeping for a retry, any successfully returned response body owned by the retry loop is drained up to an internal cap and closed.
 - When a retry is selected for a streaming multipart request whose `GetBody` is supplied by middleware, delivery stops the original producer before draining the intermediate response. This does not make the default streaming multipart body replayable.
 - If draining or closing that retry response fails, delivery stops before another transport attempt and returns an error preserving every cleanup cause.
@@ -135,10 +138,10 @@ Non-replayable streaming bodies are attempted once; if their first attempt retur
 Its positive length never implies replayability, even for a seekable source;
 neither retries nor 307/308 redirects receive a `GetBody` callback.
 
-The first request body is closed by the HTTP transport. Delivery materialization
-does not pre-close a caller-provided request reader. Nested multipart
-`FilePart.Body` values remain caller-owned and are not closed by the multipart
-writer.
+The HTTP transport owns closing the request body. Raw request-body cleanup
+shares that same close operation with the transport and stops new reads on the
+original request body. Nested multipart `FilePart.Body` values remain
+caller-owned.
 
 ## Forbidden
 
