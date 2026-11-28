@@ -1,7 +1,7 @@
 github.com/agentable/go-orderedobject v0.3.8 h1:6veJebWUThImsg4n0UeMlrZhSb1wDW/PMGxfBr9MHoM=
 github.com/agentable/go-orderedobject v0.3.8/go.mod h1:N53EGHC6WjslYlPhdy/LCfUTp47s2e0euYnOu66cfyc=
-github.com/agentable/go-requests v0.1.31 h1:gnb/QDKATginnKqnvMI5rDOxoVqNL3mg6aLEqScZtw4=
-github.com/agentable/go-requests v0.1.31/go.mod h1:+tG9ueHzDpXcJkM1mtUlU986zc/pT8D/32yZmsm257M=
+github.com/agentable/go-requests v0.1.32 h1:AKAqrEJuSkYQBGZDQ/vwSRGu45gBcCuOf8Dc3/0FoKw=
+github.com/agentable/go-requests v0.1.32/go.mod h1:+tG9ueHzDpXcJkM1mtUlU986zc/pT8D/32yZmsm257M=
 github.com/goccy/go-yaml v1.19.2 h1:PmFC1S6h8ljIz6gMRBopkjP1TVT7xuwrButHID66PoM=
 github.com/goccy/go-yaml v1.19.2/go.mod h1:XBurs7gK8ATbW4ZPGKgcbrY1Br56PdM69F7LkFRi1kA=
 github.com/google/go-cmp v0.6.0/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=
